@@ -1229,7 +1229,7 @@ describe("ConnectServer", () => {
     ]);
   });
 
-  it("keeps the console shell public while protecting admin APIs", async () => {
+  it("keeps the console shell and API reference public while protecting admin APIs", async () => {
     const staticRoot = await createTestStaticRoot();
     try {
       const app = createTestServer([apiKeyProvider], {
@@ -1242,7 +1242,10 @@ describe("ConnectServer", () => {
       expect(consoleScript.status).toBe(200);
       expect(consoleScript.headers.get("cache-control")).not.toBe("no-store");
       expect((await app.request("/api/providers")).status).toBe(401);
-      expect((await app.request("/docs")).status).toBe(401);
+      expect((await app.request("/docs")).status).toBe(200);
+      const openApi = await app.request("/openapi.json");
+      expect(openApi.status).toBe(200);
+      expect(openApi.headers.get("content-type")).toContain("application/json");
       expect((await app.request("/api/providers")).headers.get("cache-control")).toBe("no-store");
 
       const authorized = await app.request("/api/providers", {

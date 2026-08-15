@@ -32,8 +32,8 @@ authentication coexists with existing runtime tokens and does not apply to admin
 [Configuration](configuration.md#jwt-access-tokens) for the resource-server scope and Node-only
 limitations.
 
-Admin endpoints under `/api/*`, `/docs`, and the Web Console use `OOMOL_CONNECT_ADMIN_TOKEN` when it
-is configured.
+Admin endpoints under `/api/*` and the Web Console use `OOMOL_CONNECT_ADMIN_TOKEN` when it is
+configured. `/openapi.json` and `/docs` are public.
 
 ## MCP
 

@@ -175,7 +175,7 @@ curl -s http://localhost:3000/api/actions \
   -H "authorization: Bearer replace-with-an-admin-token"
 ```
 
-Use the admin token for `/api`, `/docs`, and the web console. Create persistent runtime tokens for
+Use the admin token for `/api` and the web console. Create persistent runtime tokens for
 `/v1` and `/mcp` from the web console Access tab or `POST /api/runtime-tokens`; only token hashes are
 stored in SQLite. Persistent tokens have no provider proxy access unless their independent
 `allowedProxies` grant includes the provider service or `*`. `OOMOL_CONNECT_RUNTIME_TOKEN` remains

@@ -101,6 +101,9 @@ async function installLocalAuthCookie(context: Context, options: LocalAuthOption
 function isPublicPath(path: string, method: string): boolean {
   return (
     path === "/health" ||
+    path === "/openapi.json" ||
+    path === "/docs" ||
+    path.startsWith("/docs/") ||
     path === "/oauth/callback" ||
     path.startsWith("/oauth/callback/") ||
     (method === "GET" && path === "/api/auth/session") ||

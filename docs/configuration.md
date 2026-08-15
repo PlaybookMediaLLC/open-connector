@@ -10,7 +10,7 @@ OpenConnector is configured with environment variables.
 | `OOMOL_CONNECT_DATA_DIR`                 | `./data`                  | Directory containing `connect.sqlite`. Docker image sets `/app/data`.                               |
 | `OOMOL_CONNECT_ENCRYPTION_KEY`           | unset                     | Encrypts credentials, OAuth config, pending OAuth state, and completed idempotent Action responses. |
 | `OOMOL_CONNECT_NEW_ENCRYPTION_KEY`       | unset                     | New key used by `runtime:data rotate-key`.                                                          |
-| `OOMOL_CONNECT_ADMIN_TOKEN`              | unset                     | Requires bearer-token auth for local admin API, docs, and web console.                              |
+| `OOMOL_CONNECT_ADMIN_TOKEN`              | unset                     | Requires bearer-token auth for local admin API and web console.                                     |
 | `OOMOL_CONNECT_RUNTIME_TOKEN`            | unset                     | Optional bootstrap runtime bearer token for `/v1` and MCP callers.                                  |
 | `OOMOL_CONNECT_ALLOWED_CUSTOM_OAUTH`     | unset                     | Enables connection-scoped OAuth apps for `*` or a comma-separated service list.                     |
 | `OOMOL_CONNECT_JWKS_URI`                 | unset                     | Node-only JWKS endpoint for validating runtime JWT access tokens.                                   |

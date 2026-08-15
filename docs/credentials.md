@@ -288,7 +288,7 @@ Set an admin bearer token when the admin API or web console is reachable outside
 OOMOL_CONNECT_ADMIN_TOKEN="replace-with-an-admin-token" npm run dev
 ```
 
-Admin clients calling `/api`, `/docs`, or the web console should send:
+Admin clients calling `/api` or the web console should send:
 
 ```text
 Authorization: Bearer replace-with-an-admin-token
