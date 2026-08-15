@@ -95,6 +95,7 @@ describe("action execution OpenAPI", () => {
       required: string[];
     };
 
+    expect(document.info.title).toBe("Oppulence Connector Local Runtime");
     expect(runtimePolicyPath.get.responses["200"]).toBeDefined();
     expect(runtimePolicyPath.put.responses["413"]).toBeDefined();
     expect(tokenPath.put.responses["413"]).toBeDefined();
