@@ -1,64 +1,67 @@
 import { z } from "zod";
 
 export type ConstraintRule =
-  | { kind: "max_number"; value: number }
+  | { kind: "required" }
+  | { kind: "forbidden" }
+  | { kind: "max_number"; value: string }
+  | { kind: "min_number"; value: string }
   | { kind: "pattern"; value: string }
   | { kind: "one_of"; values: string[] }
   | { kind: "max_length"; value: number };
 
 /**
- * One deployment-level restriction on the input of matching actions.
- * See rfc/0001 (argument-level constraints) and rfc/0004 (configuration).
+ * One restriction on the input of matching actions (rfc/0001).
+ * A missing path fails closed unless `optional` is true.
  */
 export interface ActionConstraint {
   action: string;
   path: string;
+  optional?: boolean;
   rule: ConstraintRule;
 }
 
-const constraintListSchema: z.ZodType<ActionConstraint[]> = z.array(
-  z.object({
-    action: z.string().min(1),
-    path: z.string().startsWith("/"),
-    rule: z.discriminatedUnion("kind", [
-      z.object({ kind: z.literal("max_number"), value: z.number() }),
-      z.object({
-        kind: z.literal("pattern"),
-        value: z.string().refine(isValidRegExp, { message: "must be a valid regular expression" }),
-      }),
-      z.object({ kind: z.literal("one_of"), values: z.array(z.string()).min(1) }),
-      z.object({ kind: z.literal("max_length"), value: z.number().int().positive() }),
-    ]),
-  }),
-);
-
+/** Structured denial metadata. Never contains input values. */
 export interface ConstraintViolation {
-  action: string;
   path: string;
-  kind: ConstraintRule["kind"];
+  ruleKind: ConstraintRule["kind"];
   message: string;
 }
 
-/**
- * Parses the LENS_CONSTRAINTS JSON value. Returns an empty list when unset.
- * Throws on malformed configuration so a misconfigured deployment fails at startup.
- */
-export function parseConstraints(raw: string | undefined): ActionConstraint[] {
-  const trimmed = raw?.trim();
-  if (!trimmed) {
-    return [];
+const numericString = z.string().refine((v) => Number.isFinite(Number(v)) && v.trim() !== "", {
+  message: "must be a numeric string",
+});
+
+const ruleSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("required") }),
+  z.object({ kind: z.literal("forbidden") }),
+  z.object({ kind: z.literal("max_number"), value: numericString }),
+  z.object({ kind: z.literal("min_number"), value: numericString }),
+  z.object({
+    kind: z.literal("pattern"),
+    value: z.string().refine(isValidRegExp, { message: "must be a valid regular expression" }),
+  }),
+  z.object({ kind: z.literal("one_of"), values: z.array(z.string()).min(1) }),
+  z.object({ kind: z.literal("max_length"), value: z.number().int().positive() }),
+]);
+
+export const constraintListSchema: z.ZodType<ActionConstraint[]> = z.array(
+  z.object({
+    action: z.string().min(1),
+    path: z.string().startsWith("/"),
+    optional: z.boolean().optional(),
+    rule: ruleSchema,
+  }),
+);
+
+/** Same pattern semantics as the upstream action policy lists: "*", "service.*", or an exact id. */
+export function matchesActionPattern(pattern: string, actionId: string): boolean {
+  if (pattern === "*") {
+    return true;
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    throw new Error("LENS_CONSTRAINTS must be a JSON array of constraints.");
+  if (pattern.endsWith(".*")) {
+    return actionId.startsWith(pattern.slice(0, -1));
   }
-  const result = constraintListSchema.safeParse(parsed);
-  if (!result.success) {
-    throw new Error(`LENS_CONSTRAINTS is invalid: ${result.error.issues[0]?.message ?? "unknown error"}`);
-  }
-  return result.data;
+  return actionId === pattern;
 }
 
 /**
@@ -74,65 +77,70 @@ export function evaluateConstraints(
     if (!matchesActionPattern(constraint.action, actionId)) {
       continue;
     }
-    const message = checkRule(constraint.rule, resolvePointer(input, constraint.path));
+    const value = resolvePointer(input, constraint.path);
+    const message = checkRule(constraint.rule, value, constraint.optional === true);
     if (message) {
-      return { action: constraint.action, path: constraint.path, kind: constraint.rule.kind, message };
+      return { path: constraint.path, ruleKind: constraint.rule.kind, message };
     }
   }
   return undefined;
 }
 
-/** Same pattern semantics as the action policy lists: "*", "service.*", or an exact id. */
-function matchesActionPattern(pattern: string, actionId: string): boolean {
-  if (pattern === "*") {
-    return true;
-  }
-  if (pattern.endsWith(".*")) {
-    return actionId.startsWith(pattern.slice(0, -1));
-  }
-  return actionId === pattern;
-}
-
 /**
  * Checks one rule against one resolved value.
- * Missing values fail closed for every rule except max_length.
+ * Error messages reference policy bounds only, never input values.
  */
-function checkRule(rule: ConstraintRule, value: unknown): string | undefined {
+function checkRule(rule: ConstraintRule, value: unknown, optional: boolean): string | undefined {
+  if (rule.kind === "forbidden") {
+    return value === undefined ? undefined : "value is forbidden at this path";
+  }
+  if (value === undefined) {
+    if (rule.kind === "required") {
+      return "value is required at this path";
+    }
+    return optional ? undefined : "value is missing and the constraint is not optional";
+  }
   switch (rule.kind) {
+    case "required": {
+      return undefined;
+    }
     case "max_number": {
       if (typeof value !== "number" || Number.isNaN(value)) {
-        return "value is missing or is not a number";
+        return "value is not a number";
       }
-      return value <= rule.value ? undefined : `value ${value} exceeds the maximum of ${rule.value}`;
+      return value <= Number(rule.value) ? undefined : `value exceeds the maximum of ${rule.value}`;
+    }
+    case "min_number": {
+      if (typeof value !== "number" || Number.isNaN(value)) {
+        return "value is not a number";
+      }
+      return value >= Number(rule.value) ? undefined : `value is below the minimum of ${rule.value}`;
     }
     case "pattern": {
       if (typeof value !== "string") {
-        return "value is missing or is not a string";
+        return "value is not a string";
       }
       // ponytail: the regex compiles per check; cache compiled rules if constraint lists grow large.
-      return new RegExp(rule.value, "u").test(value) ? undefined : `value does not match the pattern ${rule.value}`;
+      return new RegExp(rule.value, "u").test(value) ? undefined : "value does not match the required pattern";
     }
     case "one_of": {
       if (typeof value !== "string") {
-        return "value is missing or is not a string";
+        return "value is not a string";
       }
       return rule.values.includes(value) ? undefined : "value is not in the allowed list";
     }
     case "max_length": {
-      if (value === undefined || value === null) {
-        return undefined;
-      }
       const length = typeof value === "string" || Array.isArray(value) ? value.length : undefined;
       if (length === undefined) {
         return "value has no length";
       }
-      return length <= rule.value ? undefined : `length ${length} exceeds the maximum of ${rule.value}`;
+      return length <= rule.value ? undefined : `length exceeds the maximum of ${rule.value}`;
     }
   }
 }
 
 /** Resolves an RFC 6901 JSON pointer against the action input. */
-function resolvePointer(input: unknown, pointer: string): unknown {
+export function resolvePointer(input: unknown, pointer: string): unknown {
   let current: unknown = input;
   for (const rawSegment of pointer.split("/").slice(1)) {
     const segment = rawSegment.replaceAll("~1", "/").replaceAll("~0", "~");

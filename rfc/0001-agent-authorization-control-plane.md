@@ -2434,3 +2434,35 @@ to:
 > **Does this agent possess valid, bounded, explainable authority to perform this exact action, against this exact resource, right now?**
 
 And every execution should leave behind enough evidence to prove the answer.
+
+---
+
+# Implementation status (fork, 2026-08-17)
+
+All four phases are implemented fork-side in `src/lens/` under the rfc/0004 isolation
+rules, not in the upstream primary files this RFC names. The enforcement boundary wraps
+the shared `ActionRunner`, which both HTTP and MCP callers use.
+
+Implemented: argument constraints with `optional` semantics; principal and subject
+mapping per token; per-token lens policy layers with monotonic composition and policy
+snapshot IDs; authorization evidence with run linkage; usage meters with atomic
+single-statement reservation (`reserve → execute → commit/release`); approvals with
+encrypted intent, digest binding, the full state machine, single-use grant consumption,
+and execution-time revalidation of lens policy, upstream token policy, token existence,
+and reservations; policy simulation; effective-policy inspection; a minimal approvals
+page. Configuration: `LENS_POLICY` env plus `PUT /lens/api/tokens/:id/policy`.
+
+Deliberate deviations, each with an upgrade path:
+
+1. The raw provider proxy is not metered or approval-gated; deployments that use meters
+   should block proxies with the upstream `blockedProxies` policy.
+2. Usage-limit denials use the upstream `rate_limited` wire code for HTTP 429;
+   `details.code` carries `usage_limit_exceeded`.
+3. Approval resolution executes inline in the approve request after grant consumption,
+   instead of through a separate worker.
+4. Usage limits scope to token only, as this RFC permits for the first release.
+5. The MCP read-only status tool and the full console page wait on upstream-owned
+   surfaces (`src/mcp.ts`, `web/`); the `/lens/api` endpoints and `/lens/approvals`
+   page cover the need until then.
+6. Action manifests are not introduced; meters are declared in lens policy
+   (`meters: [{ name, action, kind, path }]`) as the phase-1 pattern this RFC allows.

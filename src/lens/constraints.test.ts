@@ -1,110 +1,92 @@
 import type { ActionConstraint } from "./constraints.ts";
 
 import { describe, expect, it } from "vitest";
-import { evaluateConstraints, parseConstraints } from "./constraints.ts";
+import { constraintListSchema, evaluateConstraints, resolvePointer } from "./constraints.ts";
 
-const maxRefund: ActionConstraint = {
-  action: "stripe.create_refund",
-  path: "/amount",
-  rule: { kind: "max_number", value: 100 },
-};
+function constraint(partial: Partial<ActionConstraint> & { rule: ActionConstraint["rule"] }): ActionConstraint {
+  return { action: "svc.act", path: "/value", ...partial };
+}
 
-const internalRecipients: ActionConstraint = {
-  action: "gmail.*",
-  path: "/to",
-  rule: { kind: "pattern", value: "@company\\.com$" },
-};
-
-describe("parseConstraints", () => {
-  it("returns an empty list for unset or blank values", () => {
-    expect(parseConstraints(undefined)).toEqual([]);
-    expect(parseConstraints("  ")).toEqual([]);
+describe("constraintListSchema", () => {
+  it("accepts every rule kind", () => {
+    const list: unknown = [
+      { action: "a.b", path: "/x", rule: { kind: "required" } },
+      { action: "a.b", path: "/x", rule: { kind: "forbidden" } },
+      { action: "a.b", path: "/x", rule: { kind: "max_number", value: "100" } },
+      { action: "a.b", path: "/x", rule: { kind: "min_number", value: "1.5" } },
+      { action: "a.b", path: "/x", optional: true, rule: { kind: "pattern", value: "^ok$" } },
+      { action: "a.b", path: "/x", rule: { kind: "one_of", values: ["a"] } },
+      { action: "a.b", path: "/x", rule: { kind: "max_length", value: 3 } },
+    ];
+    expect(constraintListSchema.parse(list)).toHaveLength(7);
   });
 
-  it("parses a valid constraint list", () => {
-    expect(parseConstraints(JSON.stringify([maxRefund]))).toEqual([maxRefund]);
-  });
-
-  it("throws on malformed JSON", () => {
-    expect(() => parseConstraints("{not json")).toThrow(/JSON array/u);
-  });
-
-  it("throws on an unknown rule kind", () => {
-    const raw = JSON.stringify([{ action: "a.b", path: "/x", rule: { kind: "min_number", value: 1 } }]);
-    expect(() => parseConstraints(raw)).toThrow(/invalid/u);
-  });
-
-  it("throws on an invalid regular expression", () => {
-    const raw = JSON.stringify([{ action: "a.b", path: "/x", rule: { kind: "pattern", value: "(" } }]);
-    expect(() => parseConstraints(raw)).toThrow(/invalid/u);
-  });
-
-  it("throws on a path without a leading slash", () => {
-    const raw = JSON.stringify([{ action: "a.b", path: "x", rule: { kind: "max_length", value: 1 } }]);
-    expect(() => parseConstraints(raw)).toThrow(/invalid/u);
+  it("rejects non-numeric bounds and invalid regexes", () => {
+    expect(() =>
+      constraintListSchema.parse([{ action: "a.b", path: "/x", rule: { kind: "max_number", value: "ten" } }]),
+    ).toThrow();
+    expect(() =>
+      constraintListSchema.parse([{ action: "a.b", path: "/x", rule: { kind: "pattern", value: "(" } }]),
+    ).toThrow();
   });
 });
 
 describe("evaluateConstraints", () => {
-  it("passes input inside the limit", () => {
-    expect(evaluateConstraints([maxRefund], "stripe.create_refund", { amount: 100 })).toBeUndefined();
+  it("fails closed on a missing path unless optional", () => {
+    const strict = constraint({ rule: { kind: "max_number", value: "5" } });
+    expect(evaluateConstraints([strict], "svc.act", {})).toMatchObject({ ruleKind: "max_number" });
+    const lenient = constraint({ optional: true, rule: { kind: "max_number", value: "5" } });
+    expect(evaluateConstraints([lenient], "svc.act", {})).toBeUndefined();
   });
 
-  it("rejects input above a max_number limit", () => {
-    const violation = evaluateConstraints([maxRefund], "stripe.create_refund", { amount: 101 });
-    expect(violation).toMatchObject({ path: "/amount", kind: "max_number" });
+  it("enforces required and forbidden", () => {
+    const required = constraint({ rule: { kind: "required" } });
+    expect(evaluateConstraints([required], "svc.act", {})).toMatchObject({ ruleKind: "required" });
+    expect(evaluateConstraints([required], "svc.act", { value: 1 })).toBeUndefined();
+    const forbidden = constraint({ rule: { kind: "forbidden" } });
+    expect(evaluateConstraints([forbidden], "svc.act", { value: 1 })).toMatchObject({ ruleKind: "forbidden" });
+    expect(evaluateConstraints([forbidden], "svc.act", {})).toBeUndefined();
   });
 
-  it("fails closed when a max_number value is missing", () => {
-    expect(evaluateConstraints([maxRefund], "stripe.create_refund", {})).toMatchObject({ kind: "max_number" });
+  it("enforces numeric bounds from string policy values", () => {
+    const max = constraint({ rule: { kind: "max_number", value: "100" } });
+    const min = constraint({ rule: { kind: "min_number", value: "10" } });
+    expect(evaluateConstraints([max, min], "svc.act", { value: 50 })).toBeUndefined();
+    expect(evaluateConstraints([max], "svc.act", { value: 101 })).toMatchObject({ ruleKind: "max_number" });
+    expect(evaluateConstraints([min], "svc.act", { value: 9 })).toMatchObject({ ruleKind: "min_number" });
+    expect(evaluateConstraints([max], "svc.act", { value: "100" })).toMatchObject({ ruleKind: "max_number" });
   });
 
-  it("ignores actions that do not match the pattern", () => {
-    expect(evaluateConstraints([maxRefund], "stripe.create_charge", { amount: 9999 })).toBeUndefined();
-  });
-
-  it("matches service prefixes and rejects external recipients", () => {
-    expect(evaluateConstraints([internalRecipients], "gmail.send_email", { to: "a@company.com" })).toBeUndefined();
-    expect(evaluateConstraints([internalRecipients], "gmail.send_email", { to: "a@evil.com" })).toMatchObject({
-      kind: "pattern",
+  it("enforces pattern, one_of, and max_length", () => {
+    const pattern = constraint({ path: "/to", rule: { kind: "pattern", value: "@company\\.com$" } });
+    expect(evaluateConstraints([pattern], "svc.act", { to: "a@company.com" })).toBeUndefined();
+    expect(evaluateConstraints([pattern], "svc.act", { to: "a@evil.com" })).toMatchObject({ ruleKind: "pattern" });
+    const oneOf = constraint({ path: "/env", rule: { kind: "one_of", values: ["staging"] } });
+    expect(evaluateConstraints([oneOf], "svc.act", { env: "production" })).toMatchObject({ ruleKind: "one_of" });
+    const maxLength = constraint({ path: "/items", rule: { kind: "max_length", value: 2 } });
+    expect(evaluateConstraints([maxLength], "svc.act", { items: [1, 2, 3] })).toMatchObject({
+      ruleKind: "max_length",
     });
   });
 
-  it("fails closed when a pattern value is missing", () => {
-    expect(evaluateConstraints([internalRecipients], "gmail.send_email", {})).toMatchObject({ kind: "pattern" });
+  it("never leaks input values into violation messages", () => {
+    const pattern = constraint({ path: "/to", rule: { kind: "pattern", value: "@company\\.com$" } });
+    const violation = evaluateConstraints([pattern], "svc.act", { to: "secret@evil.com" });
+    expect(violation?.message).not.toContain("secret@evil.com");
   });
 
-  it("matches every action with the wildcard pattern", () => {
-    const anywhere: ActionConstraint = { action: "*", path: "/env", rule: { kind: "one_of", values: ["staging"] } };
-    expect(evaluateConstraints([anywhere], "vercel.deploy", { env: "production" })).toMatchObject({ kind: "one_of" });
-    expect(evaluateConstraints([anywhere], "vercel.deploy", { env: "staging" })).toBeUndefined();
+  it("scopes constraints by action pattern", () => {
+    const scoped = constraint({ action: "gmail.*", rule: { kind: "required" } });
+    expect(evaluateConstraints([scoped], "stripe.refund", {})).toBeUndefined();
+    expect(evaluateConstraints([scoped], "gmail.send", {})).toMatchObject({ ruleKind: "required" });
   });
+});
 
-  it("lets max_length pass when the value is absent", () => {
-    const cap: ActionConstraint = { action: "x.y", path: "/items", rule: { kind: "max_length", value: 2 } };
-    expect(evaluateConstraints([cap], "x.y", {})).toBeUndefined();
-    expect(evaluateConstraints([cap], "x.y", { items: [1, 2] })).toBeUndefined();
-    expect(evaluateConstraints([cap], "x.y", { items: [1, 2, 3] })).toMatchObject({ kind: "max_length" });
-  });
-
-  it("resolves nested paths, array indexes, and escaped segments", () => {
-    const nested: ActionConstraint = {
-      action: "x.y",
-      path: "/message/recipients/0/email",
-      rule: { kind: "pattern", value: "@company\\.com$" },
-    };
-    const escaped: ActionConstraint = {
-      action: "x.y",
-      path: "/fields/a~1b",
-      rule: { kind: "max_number", value: 5 },
-    };
-    const input = {
-      message: { recipients: [{ email: "a@company.com" }] },
-      fields: { "a/b": 3 },
-    };
-    expect(evaluateConstraints([nested, escaped], "x.y", input)).toBeUndefined();
-    expect(evaluateConstraints([nested], "x.y", { message: { recipients: [{ email: "a@evil.com" }] } })).toMatchObject({
-      kind: "pattern",
-    });
+describe("resolvePointer", () => {
+  it("resolves nesting, array indexes, and escaped segments", () => {
+    const input = { a: { b: [{ "x/y": 7 }] } };
+    expect(resolvePointer(input, "/a/b/0/x~1y")).toBe(7);
+    expect(resolvePointer(input, "/a/missing")).toBeUndefined();
+    expect(resolvePointer(null, "/a")).toBeUndefined();
   });
 });

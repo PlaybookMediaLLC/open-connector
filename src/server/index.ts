@@ -9,7 +9,7 @@ import {
   setEgressTrustedHosts,
   setPrivateNetworkAccessAllowed,
 } from "../core/request.ts";
-import { createLensActionRunnerWrapper } from "../lens/lens-action-runner.ts"; // lens-seam
+import { installLens } from "../lens/install-node.ts"; // lens-seam
 import { ProviderLoader } from "../providers/provider-loader.ts";
 import { executorModules } from "../providers/registry.generated.ts";
 import { createRuntimeJwtVerifier } from "./api/runtime-jwt.ts";
@@ -64,6 +64,15 @@ const transitFiles = new TransitFileService({
   maxBytes: transitFileMaxBytes,
 });
 await transitFiles.cleanupExpired();
+const lens = await installLens({
+  dataDir,
+  env: process.env,
+  secretCodec,
+  runtimeDatabase,
+  actionPolicy,
+  adminToken,
+  logger,
+}); // lens-seam
 const { app, runtimeAuthConfigured } = await createConnectApp({
   catalog,
   providerLoader,
@@ -76,9 +85,12 @@ const { app, runtimeAuthConfigured } = await createConnectApp({
   verifyRuntimeJwt,
   actionPolicy,
   allowedCustomOAuth,
-  registerStaticRoutes: (app) => registerStaticRoutes(app, staticRoot),
+  registerStaticRoutes: (app) => {
+    lens.registerRoutes(app); // lens-seam
+    registerStaticRoutes(app, staticRoot);
+  },
   logger,
-  wrapActionRunner: createLensActionRunnerWrapper(process.env.LENS_CONSTRAINTS), // lens-seam
+  wrapActionRunner: lens.wrapActionRunner, // lens-seam
 });
 
 process.once("SIGINT", () => {
