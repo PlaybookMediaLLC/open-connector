@@ -12,6 +12,7 @@ import {
   setEgressTrustedHosts,
   setPrivateNetworkAccessAllowed,
 } from "../core/request.ts";
+import { createLensActionRunnerWrapper } from "../lens/lens-action-runner.ts"; // lens-seam
 import { ProviderLoader } from "../providers/provider-loader.ts";
 import { executorModules } from "../providers/registry.cloudflare.generated.ts";
 import { isConsoleShellPath } from "./api/console-paths.ts";
@@ -89,6 +90,7 @@ async function createCloudflareApp(env: CloudflareEnv, publicOrigin: string): Pr
       blockedProxies: parseActionPolicyList(env.OOMOL_CONNECT_BLOCKED_PROXIES),
     }),
     allowedCustomOAuth: parseActionPolicyList(env.OOMOL_CONNECT_ALLOWED_CUSTOM_OAUTH),
+    wrapActionRunner: createLensActionRunnerWrapper((env as { LENS_CONSTRAINTS?: string }).LENS_CONSTRAINTS), // lens-seam
     logger: workerLogger,
     computeRuntimeAuthConfigured: false,
     // Cloudflare compresses on egress itself: Response defaults to

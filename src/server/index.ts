@@ -9,6 +9,7 @@ import {
   setEgressTrustedHosts,
   setPrivateNetworkAccessAllowed,
 } from "../core/request.ts";
+import { createLensActionRunnerWrapper } from "../lens/lens-action-runner.ts"; // lens-seam
 import { ProviderLoader } from "../providers/provider-loader.ts";
 import { executorModules } from "../providers/registry.generated.ts";
 import { createRuntimeJwtVerifier } from "./api/runtime-jwt.ts";
@@ -77,6 +78,7 @@ const { app, runtimeAuthConfigured } = await createConnectApp({
   allowedCustomOAuth,
   registerStaticRoutes: (app) => registerStaticRoutes(app, staticRoot),
   logger,
+  wrapActionRunner: createLensActionRunnerWrapper(process.env.LENS_CONSTRAINTS), // lens-seam
 });
 
 process.once("SIGINT", () => {

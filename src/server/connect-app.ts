@@ -32,6 +32,8 @@ export interface ConnectAppOptions {
   logger?: Logger;
   computeRuntimeAuthConfigured?: boolean;
   compressApiResponses?: boolean;
+  /** lens-seam: optional wrapper around the shared ActionRunner. See rfc/0004. */
+  wrapActionRunner?: (actions: ActionRunner) => ActionRunner;
 }
 
 export interface ConnectApp {
@@ -58,7 +60,7 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
     store: options.runtimeDatabase.connectionStore,
     logger: options.logger,
   });
-  const actions = new ActionRunner({
+  let actions = new ActionRunner({
     catalog: options.catalog,
     providerLoader: options.providerLoader,
     connections,
@@ -67,6 +69,9 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
     actionPolicy: options.actionPolicy,
     logger: options.logger,
   });
+  if (options.wrapActionRunner) {
+    actions = options.wrapActionRunner(actions); // lens-seam
+  }
 
   return {
     app: new ConnectServer({
