@@ -6,7 +6,7 @@ import type { OAuthClientConfigInput } from "../oauth/oauth-client-config-servic
 import type { IProviderLoader } from "../providers/provider-loader.ts";
 import type { LocalAuthOptions } from "./api/auth.ts";
 import type { RuntimeActionHttpResult } from "./api/runtime-api.ts";
-import type { ITransitFileService } from "./files/transit-file-store.ts";
+import type { ITransitFileService, TransitFileUpload } from "./files/transit-file-store.ts";
 import type { Logger } from "./logger.ts";
 import type { IIdempotencyStore } from "./storage/idempotency-store.ts";
 import type { IRuntimePolicyStore } from "./storage/runtime-policy-store.ts";
@@ -14,7 +14,7 @@ import type { RunLogCaller, RunLogListInput } from "./storage/runtime-store.ts";
 import type { RuntimeGrant, RuntimeTokenService } from "./storage/runtime-token-service.ts";
 import type { Context } from "hono";
 
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { createMcpHandler } from "@modelcontextprotocol/server";
 import { Scalar } from "@scalar/hono-api-reference";
 import { Hono } from "hono";
 import { compress } from "hono/compress";
@@ -69,6 +69,7 @@ export interface IConnectServerOptions {
   actions: ActionRunner;
   idempotency: IIdempotencyStore;
   transitFiles: ITransitFileService;
+  uploadTransitFile?: (request: Request) => Promise<TransitFileUpload>;
   staticRoot?: string;
   auth?: LocalAuthOptions;
   actionPolicy?: ActionPolicyService;
@@ -251,6 +252,10 @@ export class ConnectServer {
 
   private async createTransitFile(context: Context): Promise<Response> {
     try {
+      if (this.options.uploadTransitFile) {
+        return context.json(await this.options.uploadTransitFile(context.req.raw));
+      }
+
       const form = await context.req.raw.formData();
       const file = form.get("file");
       if (!(file instanceof File)) {
@@ -680,26 +685,24 @@ export class ConnectServer {
   }
 
   private async handleMcp(context: Context): Promise<Response> {
-    const transport = new WebStandardStreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-      enableJsonResponse: true,
-    });
-    const server = createMcpServer({
-      catalog: this.options.catalog,
-      providerLoader: this.options.providerLoader,
-      connections: this.options.connections,
-      actions: this.options.actions,
-      actionPolicy: this.actionPolicy,
-      actionSearch: this.actionSearch,
-      getPolicySnapshot: () => this.getPolicySnapshot(context),
-      runtimeGrant: readRuntimeGrant(context),
-    });
-
-    await server.connect(transport);
+    const handler = createMcpHandler(
+      () =>
+        createMcpServer({
+          catalog: this.options.catalog,
+          providerLoader: this.options.providerLoader,
+          connections: this.options.connections,
+          actions: this.options.actions,
+          actionPolicy: this.actionPolicy,
+          actionSearch: this.actionSearch,
+          getPolicySnapshot: () => this.getPolicySnapshot(context),
+          runtimeGrant: readRuntimeGrant(context),
+        }),
+      { legacy: "stateless", responseMode: "json" },
+    );
     try {
-      return await transport.handleRequest(context.req.raw);
+      return await handler.fetch(context.req.raw);
     } finally {
-      await server.close();
+      await handler.close();
     }
   }
 
