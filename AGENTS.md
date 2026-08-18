@@ -65,3 +65,5 @@
 - Run `npm run build` only when you need a separate no-fix typecheck, for example after generated files changed or for CI parity.
 - Run `npm run generate:catalog` when provider definitions or actions change.
 - Run provider examples manually when the task changes user-facing example behavior.
+
+Fork note: this is a PlaybookMediaLLC fork. Read CLAUDE.md before you change code. <!-- lens-seam -->

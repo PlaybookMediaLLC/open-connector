@@ -41,6 +41,7 @@ and marked. Current registry:
 | `src/server/connect-app.ts` | `wrapActionRunner?` option; applied after `ActionRunner` construction                                                              |
 | `src/server/index.ts`       | import + `installLens(...)` + `lens.registerRoutes(app)` in the static-routes callback + `wrapActionRunner: lens.wrapActionRunner` |
 | `src/server/cloudflare.ts`  | import + `installLensWorker({ env, secretCodec })` + `wrapActionRunner` + `registerStaticRoutes: lens.registerRoutes`              |
+| `AGENTS.md`                 | one trailing note that points agents to `CLAUDE.md` (marked `<!-- lens-seam -->`)                                                  |
 
 Every seam line ends with `// lens-seam` (or a `lens-seam:` doc comment). To audit:
 `grep -rn "lens-seam" src/`.
