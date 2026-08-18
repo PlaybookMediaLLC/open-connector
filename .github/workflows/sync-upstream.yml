@@ -1,0 +1,73 @@
+name: Sync Upstream
+
+# Nightly fork sync. Fetches oomol-lab/open-connector, merges its main into
+# the long-lived "upstream" branch, and opens a PR from "upstream" to main
+# when the branch carries changes that main does not have. A human reviews
+# and merges the PR, so upstream code never lands on main unreviewed.
+# If the merge conflicts, the job fails and a human resolves it on the
+# "upstream" branch (see rfc/0004-fork-isolation.md: conflicts should only
+# appear in seam files).
+on:
+  schedule:
+    # 08:00 UTC = midnight PST.
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+# Serialize runs so a manual dispatch cannot race the scheduled push.
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: true
+
+# contents: write pushes the "upstream" branch.
+# pull-requests: write opens the sync PR.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    name: Merge Upstream & Open PR
+    runs-on: ubuntu-latest
+    steps:
+      # persist-credentials stays on (the default): the push step
+      # authenticates with the persisted GITHUB_TOKEN.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # Full history: the merge needs the common ancestor.
+          fetch-depth: 0
+
+      - name: Merge upstream/main into the upstream branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/oomol-lab/open-connector.git
+          git fetch upstream main
+          # Reuse the existing branch, or create it from main on the first run.
+          git checkout upstream || git checkout -b upstream
+          git merge --no-edit upstream/main
+          git push origin upstream
+
+      - name: Open PR against main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # No delta against main: nothing to open.
+          if git diff --quiet origin/main upstream; then
+            echo "upstream branch matches main; no PR needed."
+            exit 0
+          fi
+          # An open sync PR already tracks the branch; the push above updated it.
+          if [ "$(gh pr list --head upstream --base main --state open --json number --jq length)" != "0" ]; then
+            echo "Sync PR already open; branch updated."
+            exit 0
+          fi
+          # ponytail: GITHUB_TOKEN PRs do not trigger CI workflows. Swap
+          # GH_TOKEN and the checkout token for a PAT secret if the sync PR
+          # must run CI automatically; until then, close and reopen the PR
+          # (or push to it) to start checks.
+          gh pr create \
+            --base main \
+            --head upstream \
+            --title "chore: sync upstream $(date -u +%F)" \
+            --body "Nightly merge of oomol-lab/open-connector main into the upstream branch. Review the diff, then merge."
