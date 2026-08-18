@@ -45,7 +45,20 @@ jobs:
           git fetch upstream main
           # Reuse the existing branch, or create it from main on the first run.
           git checkout upstream || git checkout -b upstream
-          git merge --no-edit upstream/main
+          # Both repos regenerate assets/star-history/* daily, so that
+          # directory conflicts on every sync. Keep the fork's versions;
+          # our own star-history job rewrites them anyway. Any other
+          # conflict stops the job for a human.
+          git merge --no-edit upstream/main || {
+            git checkout --ours -- assets/star-history/ 2>/dev/null || true
+            git add -- assets/star-history/
+            if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+              echo "Conflicts outside assets/star-history/. Resolve them on the upstream branch." >&2
+              git diff --name-only --diff-filter=U >&2
+              exit 1
+            fi
+            git commit --no-edit
+          }
           git push origin upstream
 
       - name: Open PR against main
