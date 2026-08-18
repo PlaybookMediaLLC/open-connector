@@ -79,8 +79,11 @@ jobs:
           # GH_TOKEN and the checkout token for a PAT secret if the sync PR
           # must run CI automatically; until then, close and reopen the PR
           # (or push to it) to start checks.
-          gh pr create \
-            --base main \
-            --head upstream \
-            --title "chore: sync upstream $(date -u +%F)" \
-            --body "Nightly merge of oomol-lab/open-connector main into the upstream branch. Review the diff, then merge."
+          # REST, not "gh pr create": the GraphQL createPullRequest mutation
+          # rejects the Actions token with "Resource not accessible by
+          # integration" even with pull-requests: write granted.
+          gh api "repos/${GITHUB_REPOSITORY}/pulls" \
+            -f base=main \
+            -f head=upstream \
+            -f title="chore: sync upstream $(date -u +%F)" \
+            -f body="Nightly merge of oomol-lab/open-connector main into the upstream branch. Review the diff, then merge."
