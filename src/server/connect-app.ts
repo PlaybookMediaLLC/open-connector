@@ -2,7 +2,7 @@ import type { CatalogStore } from "../catalog-store.ts";
 import type { ActionPolicyService } from "../core/action-policy.ts";
 import type { IProviderLoader } from "../providers/provider-loader.ts";
 import type { RuntimeJwtVerifier } from "./api/runtime-jwt.ts";
-import type { ITransitFileService } from "./files/transit-file-store.ts";
+import type { ITransitFileService, TransitFileUpload } from "./files/transit-file-store.ts";
 import type { Logger } from "./logger.ts";
 import type { ISecretCodec } from "./secrets/secret-codec-core.ts";
 import type { RuntimeDatabase } from "./storage/runtime-database.ts";
@@ -21,6 +21,7 @@ export interface ConnectAppOptions {
   providerLoader: IProviderLoader;
   runtimeDatabase: RuntimeDatabase;
   transitFiles: ITransitFileService;
+  uploadTransitFile?: (request: Request) => Promise<TransitFileUpload>;
   publicOrigin: string;
   secretCodec: ISecretCodec;
   adminToken?: string;
@@ -32,6 +33,8 @@ export interface ConnectAppOptions {
   logger?: Logger;
   computeRuntimeAuthConfigured?: boolean;
   compressApiResponses?: boolean;
+  /** lens-seam: optional wrapper around the shared ActionRunner. See rfc/0004. */
+  wrapActionRunner?: (actions: ActionRunner) => ActionRunner;
 }
 
 export interface ConnectApp {
@@ -58,7 +61,7 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
     store: options.runtimeDatabase.connectionStore,
     logger: options.logger,
   });
-  const actions = new ActionRunner({
+  let actions = new ActionRunner({
     catalog: options.catalog,
     providerLoader: options.providerLoader,
     connections,
@@ -67,6 +70,9 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
     actionPolicy: options.actionPolicy,
     logger: options.logger,
   });
+  if (options.wrapActionRunner) {
+    actions = options.wrapActionRunner(actions); // lens-seam
+  }
 
   return {
     app: new ConnectServer({
@@ -84,6 +90,7 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
       actions,
       idempotency: options.runtimeDatabase.idempotencyStore,
       transitFiles: options.transitFiles,
+      uploadTransitFile: options.uploadTransitFile,
       runtimeTokens,
       runtimePolicyStore: options.runtimeDatabase.runtimePolicyStore,
       registerStaticRoutes: options.registerStaticRoutes,

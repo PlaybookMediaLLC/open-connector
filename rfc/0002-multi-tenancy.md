@@ -1,10 +1,10 @@
 # RFC 0002: Multi-Tenant Isolation and Connection Scoping
 
-* **Status:** Draft
-* **Author:** Lens
-* **Date:** 2026-08-17
-* **Priority:** 2 of 3
-* **Depends on:** RFC 0001 — Agent Authorization Control Plane
+- **Status:** Draft
+- **Author:** Lens
+- **Date:** 2026-08-17
+- **Priority:** 2 of 3
+- **Depends on:** RFC 0001 — Agent Authorization Control Plane
 
 ---
 
@@ -144,20 +144,20 @@ Any mismatch fails before external side effects occur.
 
 RFC 0002 establishes:
 
-* a canonical tenant identity;
-* trusted tenant resolution;
-* immutable tenant scope for a request;
-* tenant-bound principals and runtime tokens;
-* tenant-bound connections and credentials;
-* tenant-bound authorization decisions;
-* tenant-bound approvals and execution grants;
-* tenant-bound usage reservations;
-* tenant-bound run logs;
-* safe OAuth state propagation;
-* tenant-safe asynchronous execution;
-* tenant-aware caching rules;
-* a separate operator access path for cross-tenant administration;
-* compatibility with existing single-tenant deployments.
+- a canonical tenant identity;
+- trusted tenant resolution;
+- immutable tenant scope for a request;
+- tenant-bound principals and runtime tokens;
+- tenant-bound connections and credentials;
+- tenant-bound authorization decisions;
+- tenant-bound approvals and execution grants;
+- tenant-bound usage reservations;
+- tenant-bound run logs;
+- safe OAuth state propagation;
+- tenant-safe asynchronous execution;
+- tenant-aware caching rules;
+- a separate operator access path for cross-tenant administration;
+- compatibility with existing single-tenant deployments.
 
 The resulting runtime must support:
 
@@ -169,22 +169,22 @@ The resulting runtime must support:
 
 This RFC does **not** introduce:
 
-* end-user signup;
-* user management;
-* invitations;
-* organization membership;
-* a hosted identity provider;
-* billing;
-* subscriptions;
-* tenant-specific OAuth applications;
-* cross-tenant data sharing;
-* hierarchical tenants;
-* parent/child organizations;
-* tenant-to-tenant delegation;
-* tenant data export or deletion workflows;
-* tenant-specific encryption keys;
-* regional data residency;
-* tenant-specific databases.
+- end-user signup;
+- user management;
+- invitations;
+- organization membership;
+- a hosted identity provider;
+- billing;
+- subscriptions;
+- tenant-specific OAuth applications;
+- cross-tenant data sharing;
+- hierarchical tenants;
+- parent/child organizations;
+- tenant-to-tenant delegation;
+- tenant data export or deletion workflows;
+- tenant-specific encryption keys;
+- regional data residency;
+- tenant-specific databases.
 
 A tenant is a **security boundary**, not a user-management system.
 
@@ -208,10 +208,10 @@ acct_8f2k
 
 A tenant may represent:
 
-* one company;
-* one workspace;
-* one customer account;
-* one product account.
+- one company;
+- one workspace;
+- one customer account;
+- one product account.
 
 It does not necessarily represent one human.
 
@@ -225,11 +225,11 @@ An opaque externally assigned identifier.
 
 Lens does not derive tenant IDs from:
 
-* email addresses;
-* company names;
-* domains;
-* connection aliases;
-* request paths.
+- email addresses;
+- company names;
+- domains;
+- connection aliases;
+- request paths.
 
 Example:
 
@@ -251,11 +251,7 @@ The trusted runtime representation of tenant scope for one request.
 interface TenantContext {
   tenantId: string;
 
-  source:
-    | "runtime_jwt"
-    | "runtime_token"
-    | "matched_auth_sources"
-    | "legacy_default";
+  source: "runtime_jwt" | "runtime_token" | "matched_auth_sources" | "legacy_default";
 }
 ```
 
@@ -291,9 +287,9 @@ The following are mandatory.
 
 A request cannot:
 
-* operate across multiple tenants;
-* switch tenant halfway through execution;
-* authorize under one tenant and execute under another.
+- operate across multiple tenants;
+- switch tenant halfway through execution;
+- authorize under one tenant and execute under another.
 
 ---
 
@@ -340,11 +336,11 @@ An action authorized for tenant A may only resolve resources belonging to tenant
 
 A caller cannot escape scope by supplying:
 
-* a connection ID;
-* an approval ID;
-* a run ID;
-* an execution grant ID;
-* a provider account ID;
+- a connection ID;
+- an approval ID;
+- a run ID;
+- an execution grant ID;
+- a provider account ID;
 
 belonging to another tenant.
 
@@ -374,11 +370,11 @@ Tenant boundaries must not become an enumeration oracle.
 
 A request that becomes:
 
-* pending approval;
-* queued;
-* retried;
-* resumed;
-* scheduled in the future;
+- pending approval;
+- queued;
+- retried;
+- resumed;
+- scheduled in the future;
 
 retains its original tenant scope.
 
@@ -458,10 +454,10 @@ A verified runtime JWT may contain:
 
 The claim is trusted only after:
 
-* signature validation;
-* issuer validation;
-* audience validation;
-* temporal claim validation.
+- signature validation;
+- issuer validation;
+- audience validation;
+- temporal claim validation.
 
 The tenant claim itself is not trusted independently of the JWT.
 
@@ -482,11 +478,7 @@ A tenant-bound runtime token may act only inside that tenant.
 # Tenant resolution algorithm
 
 ```ts
-function resolveTenant(
-  jwtTenant?: string,
-  tokenTenant?: string,
-  mode?: TenancyMode,
-): TenantContext
+function resolveTenant(jwtTenant?: string, tokenTenant?: string, mode?: TenancyMode): TenantContext;
 ```
 
 Rules:
@@ -588,11 +580,11 @@ Tenant IDs are opaque strings.
 
 The runtime validates only structural safety:
 
-* value must be a string;
-* non-empty outside legacy mode;
-* maximum length: 128 bytes;
-* no NUL bytes;
-* no leading/trailing whitespace.
+- value must be a string;
+- non-empty outside legacy mode;
+- maximum length: 128 bytes;
+- no NUL bytes;
+- no leading/trailing whitespace.
 
 Lens does not interpret tenant IDs semantically.
 
@@ -625,7 +617,7 @@ There are no mutable ambient tenant globals.
 The original proposal required every store method to accept:
 
 ```ts
-tenantId
+tenantId;
 ```
 
 as its first argument.
@@ -664,8 +656,7 @@ Example:
 ```ts
 const tenantStore = runtimeStore.forTenant(ctx.tenant.tenantId);
 
-const connection =
-  await tenantStore.connections.getByAlias("gmail", "primary");
+const connection = await tenantStore.connections.getByAlias("gmail", "primary");
 ```
 
 No caller supplies the tenant again.
@@ -721,10 +712,10 @@ interface IOperatorRuntimeStore {
 
 Operator access requires:
 
-* operator authentication;
-* explicit tenant selection;
-* authorization under RFC 0001;
-* audit evidence.
+- operator authentication;
+- explicit tenant selection;
+- authorization under RFC 0001;
+- audit evidence.
 
 This prevents ordinary runtime code from casually becoming cross-tenant.
 
@@ -735,7 +726,7 @@ This prevents ordinary runtime code from casually becoming cross-tenant.
 RFC 0001 introduces:
 
 ```ts
-AuthorizationRequest
+AuthorizationRequest;
 ```
 
 RFC 0002 adds tenant context:
@@ -854,15 +845,15 @@ to all tenant-owned data.
 
 At minimum:
 
-* connections;
-* connection identities;
-* connection revisions;
-* runtime tokens;
-* run logs;
-* authorization decisions;
-* action approvals;
-* execution grants;
-* usage reservations.
+- connections;
+- connection identities;
+- connection revisions;
+- runtime tokens;
+- run logs;
+- authorization decisions;
+- action approvals;
+- execution grants;
+- usage reservations.
 
 Any additional persisted customer-specific tables discovered during implementation MUST also be scoped.
 
@@ -931,10 +922,10 @@ from existing even if application code is buggy.
 
 The same principle applies to:
 
-* approvals → authorization decisions;
-* execution grants → approvals;
-* runs → authorization decisions;
-* usage reservations → principals/tokens where supported.
+- approvals → authorization decisions;
+- execution grants → approvals;
+- runs → authorization decisions;
+- usage reservations → principals/tokens where supported.
 
 ---
 
@@ -978,7 +969,7 @@ TenantConnectionStore
 The runtime MUST NOT expose a method equivalent to:
 
 ```ts
-getCredential(connectionId)
+getCredential(connectionId);
 ```
 
 without tenant context.
@@ -1018,10 +1009,7 @@ All lookups occur inside the scoped store.
 Example:
 
 ```ts
-ctx.tenantStore.connections.getByAlias(
-  "stripe",
-  "billing",
-);
+ctx.tenantStore.connections.getByAlias("stripe", "billing");
 ```
 
 Even if a caller knows another tenant's globally unique connection ID:
@@ -1080,9 +1068,9 @@ The tenant ID is therefore cryptographically bound to the OAuth flow that initia
 
 The callback MUST NOT choose tenancy from:
 
-* current browser state;
-* query parameters other than verified signed state;
-* an arbitrary request header.
+- current browser state;
+- query parameters other than verified signed state;
+- an arbitrary request header.
 
 It writes the resulting connection into:
 
@@ -1098,10 +1086,10 @@ after verifying the OAuth state.
 
 OAuth state SHOULD remain:
 
-* signed;
-* expiring;
-* nonce-bound;
-* single-use where the current implementation supports it.
+- signed;
+- expiring;
+- nonce-bound;
+- single-use where the current implementation supports it.
 
 A completed or expired state cannot create a second connection.
 
@@ -1232,12 +1220,7 @@ This prevents reservations or counters from colliding across tenants.
 RFC 0002 extends future usage-limit scope to include:
 
 ```ts
-type UsageLimitScope =
-  | "token"
-  | "principal"
-  | "connection"
-  | "tenant"
-  | "runtime";
+type UsageLimitScope = "token" | "principal" | "connection" | "tenant" | "runtime";
 ```
 
 This is **authorization safety**, not billing.
@@ -1310,11 +1293,11 @@ Tenant isolation must survive beyond request lifetime.
 
 This is critical for:
 
-* approvals;
-* delayed retries;
-* queued executions;
-* RFC 0003 triggers;
-* future task systems.
+- approvals;
+- delayed retries;
+- queued executions;
+- RFC 0003 triggers;
+- future task systems.
 
 Every durable execution object MUST persist:
 
@@ -1353,7 +1336,7 @@ worker loads approval
 Worker obtains:
 
 ```ts
-runtimeStore.forTenant("acct_A")
+runtimeStore.forTenant("acct_A");
 ```
 
 and resumes execution inside that capability.
@@ -1467,10 +1450,10 @@ GET /api/operator/tenants/:tenantId/approvals
 
 These endpoints:
 
-* require operator authentication;
-* require RFC 0001 authorization;
-* produce authorization evidence;
-* explicitly identify the target tenant.
+- require operator authentication;
+- require RFC 0001 authorization;
+- produce authorization evidence;
+- explicitly identify the target tenant.
 
 The exact operator API surface may remain minimal in RFC 0002.
 
@@ -1494,10 +1477,10 @@ rather than impersonating a data-plane tenant.
 
 The UI should display the active tenant prominently when viewing:
 
-* connections;
-* runs;
-* approvals;
-* authorization decisions.
+- connections;
+- runs;
+- approvals;
+- authorization decisions.
 
 This reduces accidental operator actions against the wrong customer.
 
@@ -1551,14 +1534,14 @@ tenant:acct_A:connection:gmail:primary
 
 This applies to:
 
-* connections;
-* credentials;
-* authorization decisions;
-* policy snapshots where tenant-specific;
-* approval lookups;
-* run metadata;
-* connection-resolution caches;
-* negative lookup caches.
+- connections;
+- credentials;
+- authorization decisions;
+- policy snapshots where tenant-specific;
+- approval lookups;
+- run metadata;
+- connection-resolution caches;
+- negative lookup caches.
 
 ---
 
@@ -1568,10 +1551,10 @@ Tenant-independent immutable/catalog data may remain shared.
 
 Examples:
 
-* provider catalog;
-* action schemas;
-* action manifests;
-* static documentation.
+- provider catalog;
+- action schemas;
+- action manifests;
+- static documentation.
 
 The rule is:
 
@@ -1602,9 +1585,9 @@ Tenant IDs SHOULD NOT become high-cardinality metric labels by default.
 
 Prefer:
 
-* aggregated platform metrics;
-* logs/traces for tenant-level debugging;
-* intentionally designed tenant usage tables.
+- aggregated platform metrics;
+- logs/traces for tenant-level debugging;
+- intentionally designed tenant usage tables.
 
 This prevents observability infrastructure from becoming expensive or unstable as tenant count grows.
 
@@ -1615,10 +1598,7 @@ This prevents observability infrastructure from becoming expensive or unstable a
 Add:
 
 ```ts
-type TenantErrorCode =
-  | "tenant_required"
-  | "tenant_invalid"
-  | "tenant_mismatch";
+type TenantErrorCode = "tenant_required" | "tenant_invalid" | "tenant_mismatch";
 ```
 
 Examples:
@@ -1683,9 +1663,9 @@ Lens MUST NOT guess which hosted tenant should inherit old default-tenant resour
 
 Before enabling strict mode, operators should:
 
-* migrate or recreate legacy connections;
-* bind runtime tokens to explicit tenants;
-* verify no production workflow depends on the default tenant.
+- migrate or recreate legacy connections;
+- bind runtime tokens to explicit tenants;
+- verify no production workflow depends on the default tenant.
 
 Strict mode may warn when legacy rows remain.
 
@@ -1744,17 +1724,11 @@ interface ITenantConnectionStore {
 
   getById(id: string): Promise<Connection | null>;
 
-  getByAlias(
-    service: string,
-    alias: string,
-  ): Promise<Connection | null>;
+  getByAlias(service: string, alias: string): Promise<Connection | null>;
 
   list(input?: ConnectionListInput): Promise<Connection[]>;
 
-  update(
-    id: string,
-    input: ConnectionUpdateInput,
-  ): Promise<Connection | null>;
+  update(id: string, input: ConnectionUpdateInput): Promise<Connection | null>;
 
   delete(id: string): Promise<boolean>;
 }
@@ -2002,11 +1976,11 @@ Although billing remains out of scope, hosted deployments need protection from o
 
 RFC 0002 SHOULD make tenant identity available to future controls for:
 
-* concurrent run limits;
-* connection count limits;
-* API throughput;
-* action-meter limits;
-* queue fairness.
+- concurrent run limits;
+- connection count limits;
+- API throughput;
+- action-meter limits;
+- queue fairness.
 
 These are operational safety controls, not billing semantics.
 
@@ -2024,14 +1998,14 @@ Ship in four phases.
 
 Implement:
 
-* `tenant_id` schema migration;
-* composite uniqueness;
-* tenant-prefixed indexes;
-* tenant-scoped store interfaces;
-* SQLite implementation;
-* D1 implementation;
-* legacy default tenant;
-* store isolation tests.
+- `tenant_id` schema migration;
+- composite uniqueness;
+- tenant-prefixed indexes;
+- tenant-scoped store interfaces;
+- SQLite implementation;
+- D1 implementation;
+- legacy default tenant;
+- store isolation tests.
 
 No authentication behavior changes yet.
 
@@ -2045,13 +2019,13 @@ Goal:
 
 Implement:
 
-* verified JWT claim return;
-* tenant resolution;
-* runtime-token tenant binding;
-* `TenantContext`;
-* strict/legacy modes;
-* RFC 0001 authorization integration;
-* tenant-aware error semantics.
+- verified JWT claim return;
+- tenant resolution;
+- runtime-token tenant binding;
+- `TenantContext`;
+- strict/legacy modes;
+- RFC 0001 authorization integration;
+- tenant-aware error semantics.
 
 Goal:
 
@@ -2063,14 +2037,14 @@ Goal:
 
 Implement tenant binding for:
 
-* OAuth state;
-* authorization decisions;
-* approvals;
-* execution grants;
-* usage reservations;
-* run logs;
-* retries;
-* asynchronous workers.
+- OAuth state;
+- authorization decisions;
+- approvals;
+- execution grants;
+- usage reservations;
+- run logs;
+- retries;
+- asynchronous workers.
 
 Audit tenant-sensitive caches.
 
@@ -2084,10 +2058,10 @@ Goal:
 
 Implement:
 
-* separate operator tenant access;
-* console tenant selector;
-* operator authorization evidence;
-* strict-mode readiness tooling.
+- separate operator tenant access;
+- console tenant selector;
+- operator authorization evidence;
+- strict-mode readiness tooling.
 
 Goal:
 
@@ -2117,8 +2091,8 @@ Verify each tenant sees exactly one connection.
 
 Test both:
 
-* SQLite;
-* D1.
+- SQLite;
+- D1.
 
 ---
 
@@ -2290,11 +2264,11 @@ Test positive and negative caching.
 
 Verify tenant isolation across:
 
-* REST action execution;
-* MCP tools;
-* provider proxy;
-* approval resume;
-* retries.
+- REST action execution;
+- MCP tools;
+- provider proxy;
+- approval resume;
+- retries.
 
 ---
 
@@ -2364,16 +2338,16 @@ D1
 Example:
 
 ```ts
-getConnection(tenantId, id)
+getConnection(tenantId, id);
 ```
 
 Better than global state but rejected as the primary API.
 
 It still allows:
 
-* wrong tenant IDs;
-* parameter swaps;
-* accidentally exposing unrestricted methods.
+- wrong tenant IDs;
+- parameter swaps;
+- accidentally exposing unrestricted methods.
 
 Tenant-scoped store capabilities make the boundary harder to misuse.
 
@@ -2385,15 +2359,15 @@ Rejected for initial implementation.
 
 Advantages:
 
-* strong physical isolation.
+- strong physical isolation.
 
 Costs:
 
-* D1 operational overhead;
-* database lifecycle management;
-* migrations multiplied by tenant count;
-* expensive connection routing;
-* more complicated local development.
+- D1 operational overhead;
+- database lifecycle management;
+- migrations multiplied by tenant count;
+- expensive connection routing;
+- more complicated local development.
 
 Logical isolation with strong scoped-store boundaries is sufficient for the current product stage.
 
@@ -2413,10 +2387,10 @@ Rejected.
 
 It leaks tenancy into:
 
-* SDKs;
-* MCP;
-* CLIs;
-* every request surface.
+- SDKs;
+- MCP;
+- CLIs;
+- every request surface.
 
 More importantly, URL tenancy is still caller-supplied and therefore cannot be the security authority by itself.
 
@@ -2440,9 +2414,9 @@ Principals and tenants represent different concepts.
 
 A tenant may contain many:
 
-* users;
-* agents;
-* tokens.
+- users;
+- agents;
+- tokens.
 
 Identity must not collapse into tenancy.
 
@@ -2492,11 +2466,11 @@ Today, any tenant identifier asserted by a trusted issuer may be used.
 
 A future tenant registry could enable:
 
-* suspension;
-* lifecycle status;
-* plan/quota configuration;
-* region;
-* encryption-key assignment.
+- suspension;
+- lifecycle status;
+- plan/quota configuration;
+- region;
+- encryption-key assignment.
 
 Recommendation:
 
@@ -2612,10 +2586,10 @@ Cryptographic isolation.
 
 Dedicated:
 
-* database;
-* worker pool;
-* region;
-* encryption key;
+- database;
+- worker pool;
+- region;
+- encryption key;
 
 while preserving the same application APIs.
 

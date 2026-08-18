@@ -1,11 +1,11 @@
 # RFC 0003: Durable Triggers and Event Delivery
 
-* **Status:** Draft
-* **Author:** Lens
-* **Date:** 2026-08-17
-* **Priority:** 3 of 3
-* **Depends on:** RFC 0001 — Agent Authorization Control Plane
-* **Depends on:** RFC 0002 — Multi-Tenant Isolation and Connection Scoping
+- **Status:** Draft
+- **Author:** Lens
+- **Date:** 2026-08-17
+- **Priority:** 3 of 3
+- **Depends on:** RFC 0001 — Agent Authorization Control Plane
+- **Depends on:** RFC 0002 — Multi-Tenant Isolation and Connection Scoping
 
 ---
 
@@ -72,10 +72,10 @@ The runtime remains deliberately **pull-based**.
 
 Lens does not:
 
-* invoke agent processes;
-* host arbitrary workflow graphs;
-* evaluate user-authored event-to-action code;
-* deliver events to callback URLs.
+- invoke agent processes;
+- host arbitrary workflow graphs;
+- evaluate user-authored event-to-action code;
+- deliver events to callback URLs.
 
 Its job is narrower:
 
@@ -121,15 +121,15 @@ when a vendor updates payment details
 
 Without triggers, every product integrating Lens must separately build:
 
-* schedulers;
-* webhook infrastructure;
-* polling loops;
-* deduplication;
-* cursor management;
-* queues;
-* retry behavior;
-* tenant propagation;
-* event retention.
+- schedulers;
+- webhook infrastructure;
+- polling loops;
+- deduplication;
+- cursor management;
+- queues;
+- retry behavior;
+- tenant propagation;
+- event retention.
 
 That duplicates infrastructure immediately above the runtime.
 
@@ -147,26 +147,26 @@ That remains an agent decision subject to RFC 0001 authorization.
 
 RFC 0003 establishes:
 
-* durable event sources;
-* inbound webhook verification;
-* webhook replay protection;
-* webhook deduplication;
-* polling sources;
-* distributed-safe polling leases;
-* poll checkpoints;
-* immutable event storage;
-* event deduplication;
-* tenant propagation;
-* principal attribution;
-* per-principal delivery state;
-* visibility leases;
-* at-least-once delivery;
-* acknowledgment;
-* event-to-action causality;
-* source-specific safety limits;
-* source health;
-* provider-independent event envelopes;
-* identical SQLite and D1 semantics.
+- durable event sources;
+- inbound webhook verification;
+- webhook replay protection;
+- webhook deduplication;
+- polling sources;
+- distributed-safe polling leases;
+- poll checkpoints;
+- immutable event storage;
+- event deduplication;
+- tenant propagation;
+- principal attribution;
+- per-principal delivery state;
+- visibility leases;
+- at-least-once delivery;
+- acknowledgment;
+- event-to-action causality;
+- source-specific safety limits;
+- source health;
+- provider-independent event envelopes;
+- identical SQLite and D1 semantics.
 
 The implementation should work on:
 
@@ -184,23 +184,23 @@ without changing the event model.
 
 RFC 0003 does **not** introduce:
 
-* a workflow engine;
-* DAGs;
-* event-to-action mappings;
-* arbitrary event filters;
-* event transformation scripts;
-* push delivery to consumer URLs;
-* arbitrary outbound webhooks;
-* exactly-once processing;
-* distributed transactions between Lens and providers;
-* a general-purpose message broker;
-* Kafka compatibility;
-* consumer-defined dead-letter queues;
-* cross-tenant event sharing;
-* cron-expression workflows;
-* complex event joins;
-* event aggregation;
-* event-sourced reconstruction of provider state.
+- a workflow engine;
+- DAGs;
+- event-to-action mappings;
+- arbitrary event filters;
+- event transformation scripts;
+- push delivery to consumer URLs;
+- arbitrary outbound webhooks;
+- exactly-once processing;
+- distributed transactions between Lens and providers;
+- a general-purpose message broker;
+- Kafka compatibility;
+- consumer-defined dead-letter queues;
+- cross-tenant event sharing;
+- cron-expression workflows;
+- complex event joins;
+- event aggregation;
+- event-sourced reconstruction of provider state.
 
 Agents consume events and decide what to do.
 
@@ -338,10 +338,10 @@ Webhook ingress uses a separate high-entropy handle that can be rotated independ
 
 Static configuration does not accumulate:
 
-* cursors;
-* seen IDs;
-* scheduler leases;
-* failure counters.
+- cursors;
+- seen IDs;
+- scheduler leases;
+- failure counters.
 
 Mutable execution state lives separately.
 
@@ -426,10 +426,10 @@ Token rotation therefore does not replay the entire event stream.
 
 Per-consumer state describing:
 
-* whether the event was claimed;
-* which lease currently owns it;
-* how many times it was delivered;
-* whether it was acknowledged.
+- whether the event was claimed;
+- which lease currently owns it;
+- how many times it was delivered;
+- whether it was acknowledged.
 
 ---
 
@@ -491,11 +491,7 @@ interface EventSource {
 
   service: string;
 
-  state:
-    | "active"
-    | "paused"
-    | "error"
-    | "disabled";
+  state: "active" | "paused" | "error" | "disabled";
 
   createdByPrincipalId: string;
 
@@ -568,9 +564,7 @@ interface EventEnvelope {
 type EventProvenance =
   | {
       kind: "webhook";
-      verification:
-        | "verified"
-        | "unverified";
+      verification: "verified" | "unverified";
     }
   | {
       kind: "poll";
@@ -712,9 +706,9 @@ They should therefore be encrypted at rest rather than simply run through run-lo
 
 Run logs may record:
 
-* event ID;
-* event type;
-* digest;
+- event ID;
+- event type;
+- digest;
 
 but not duplicate complete event payloads.
 
@@ -876,11 +870,11 @@ as the public ingress credential.
 
 `hookHandle` is:
 
-* high entropy;
-* generated by Lens;
-* separate from source identity;
-* rotatable;
-* stored hashed where practical.
+- high entropy;
+- generated by Lens;
+- separate from source identity;
+- rotatable;
+- stored hashed where practical.
 
 Example:
 
@@ -904,9 +898,9 @@ The webhook handle is an ingress capability.
 
 Conflating them makes:
 
-* rotation harder;
-* accidental disclosure more dangerous;
-* authorization semantics ambiguous.
+- rotation harder;
+- accidental disclosure more dangerous;
+- authorization semantics ambiguous.
 
 ---
 
@@ -918,10 +912,7 @@ Verification should be adapter-based.
 
 ```ts
 interface WebhookVerifier {
-  verify(
-    request: WebhookVerificationRequest,
-    config: WebhookVerificationConfig,
-  ): Promise<WebhookVerificationResult>;
+  verify(request: WebhookVerificationRequest, config: WebhookVerificationConfig): Promise<WebhookVerificationResult>;
 }
 ```
 
@@ -953,10 +944,10 @@ type WebhookVerificationConfig =
 
 Provider-specific adapters can later implement schemes such as:
 
-* signed timestamps;
-* versioned signatures;
-* multiple active signing secrets;
-* provider-specific canonicalization.
+- signed timestamps;
+- versioned signatures;
+- multiple active signing secrets;
+- provider-specific canonicalization.
 
 Unknown verifier kinds fail closed.
 
@@ -968,12 +959,12 @@ Unknown verifier kinds fail closed.
 
 It MAY remain available for providers incapable of authentication, but:
 
-* it must be explicitly configured;
-* the console labels it prominently as **UNVERIFIED**;
-* the deployment may disable unsigned webhooks entirely;
-* strict hosted deployments SHOULD disable them by default;
-* a high-entropy `hookHandle` remains required;
-* tighter rate limits apply.
+- it must be explicitly configured;
+- the console labels it prominently as **UNVERIFIED**;
+- the deployment may disable unsigned webhooks entirely;
+- strict hosted deployments SHOULD disable them by default;
+- a high-entropy `hookHandle` remains required;
+- tighter rate limits apply.
 
 The webhook URL itself is not treated as equivalent to a cryptographic provider signature.
 
@@ -1021,10 +1012,10 @@ Webhook bodies are untrusted.
 
 The endpoint MUST enforce:
 
-* body size cap;
-* request timeout;
-* per-source rate limit;
-* content-type validation where appropriate.
+- body size cap;
+- request timeout;
+- per-source rate limit;
+- content-type validation where appropriate.
 
 The cap must apply while reading the request rather than after buffering an unbounded body.
 
@@ -1090,9 +1081,9 @@ dedupeKey
 
 already exists:
 
-* do not insert another event;
-* return successful provider acknowledgment;
-* do not expose whether the event had already been consumed.
+- do not insert another event;
+- return successful provider acknowledgment;
+- do not expose whether the event had already been consumed.
 
 Webhook retries should not become queue duplicates where a stable provider event ID exists.
 
@@ -1102,9 +1093,9 @@ Webhook retries should not become queue duplicates where a stable provider event
 
 Where the verifier provides a signed timestamp:
 
-* validate within configured tolerance;
-* reject stale signatures;
-* compare in constant time where applicable.
+- validate within configured tolerance;
+- reject stale signatures;
+- compare in constant time where applicable.
 
 Provider event-ID deduplication then protects against valid repeated delivery inside the allowed timestamp window.
 
@@ -1250,9 +1241,7 @@ Conceptually:
 
 ```ts
 interface AuthorizationCaller {
-  kind:
-    | "runtime_token"
-    | "event_source";
+  kind: "runtime_token" | "event_source";
 
   principalId: string;
 
@@ -1337,11 +1326,11 @@ Do not create one unmanaged process-local `setInterval()` per source.
 
 That breaks under:
 
-* multiple replicas;
-* restarts;
-* rolling deploys;
-* Workers;
-* failover.
+- multiple replicas;
+- restarts;
+- rolling deploys;
+- Workers;
+- failover.
 
 Instead, both Node and Workers use the same **database-backed due-source scheduler**.
 
@@ -1463,10 +1452,10 @@ Recommended default:
 
 This protects:
 
-* provider rate limits;
-* D1/SQLite load;
-* worker CPU;
-* accidental runaway sources.
+- provider rate limits;
+- D1/SQLite load;
+- worker CPU;
+- accidental runaway sources.
 
 ---
 
@@ -1519,10 +1508,10 @@ into `config_json`.
 
 That causes:
 
-* constant configuration rewrites;
-* race conditions;
-* unbounded document growth;
-* poor audit semantics.
+- constant configuration rewrites;
+- race conditions;
+- unbounded document growth;
+- poor audit semantics.
 
 Runtime state belongs in:
 
@@ -1598,9 +1587,9 @@ A new event is emitted when the observed representation changes.
 
 This supports polling for:
 
-* new issues;
-* status changes;
-* changed records;
+- new issues;
+- status changes;
+- changed records;
 
 without storing a giant seen-ID array.
 
@@ -1667,10 +1656,10 @@ otherwise ignore
 
 This makes polling replay-safe across:
 
-* worker restarts;
-* overlapping pages;
-* scheduler duplicates;
-* delayed retries.
+- worker restarts;
+- overlapping pages;
+- scheduler duplicates;
+- delayed retries.
 
 ---
 
@@ -1768,9 +1757,7 @@ Example:
 {
   "limit": 25,
   "leaseSeconds": 60,
-  "sourceIds": [
-    "src_123"
-  ]
+  "sourceIds": ["src_123"]
 }
 ```
 
@@ -1938,9 +1925,9 @@ RFC 0003 does not implement consumer dead-letter queues.
 
 If an event cannot be handled, the consumer may:
 
-* retry;
-* release;
-* log the failure and acknowledge it intentionally.
+- retry;
+- release;
+- log the failure and acknowledge it intentionally.
 
 Future consumer policies may add maximum delivery attempts.
 
@@ -2015,13 +2002,13 @@ execute_action
 
 Any payment action then evaluates:
 
-* principal;
-* tenant;
-* resource;
-* input;
-* budget;
-* approval;
-* current policy;
+- principal;
+- tenant;
+- resource;
+- input;
+- budget;
+- approval;
+- current policy;
 
 through RFC 0001.
 
@@ -2063,8 +2050,8 @@ it should execute with:
 
 Lens verifies that the event belongs to:
 
-* the same tenant;
-* a source accessible to the acting principal.
+- the same tenant;
+- a source accessible to the acting principal.
 
 Causation does not increase authority.
 
@@ -2184,9 +2171,9 @@ data.
 
 It never:
 
-* interprets them as Lens policy;
-* templates them automatically into provider calls;
-* executes instructions contained inside them.
+- interprets them as Lens policy;
+- templates them automatically into provider calls;
+- executes instructions contained inside them.
 
 Agent applications remain responsible for treating event content as untrusted input.
 
@@ -2475,9 +2462,9 @@ all replicas execute all sources
 
 Even though event dedupe protects correctness, duplicate provider calls:
 
-* waste budgets;
-* hit provider limits;
-* create unnecessary load.
+- waste budgets;
+- hit provider limits;
+- create unnecessary load.
 
 ---
 
@@ -2487,9 +2474,9 @@ A tenant with thousands of due sources must not permanently starve other tenants
 
 Initial scheduler implementation SHOULD:
 
-* cap sources processed per tick;
-* avoid one tenant consuming the entire batch;
-* order approximately by `next_run_at`.
+- cap sources processed per tick;
+- avoid one tenant consuming the entire batch;
+- order approximately by `next_run_at`.
 
 Sophisticated fair queuing is future work.
 
@@ -2536,10 +2523,10 @@ configured provider verification
 
 The endpoint exposes no:
 
-* catalog;
-* connection data;
-* action execution;
-* tenant selection.
+- catalog;
+- connection data;
+- action execution;
+- tenant selection.
 
 ---
 
@@ -2683,7 +2670,7 @@ The public webhook handle contains sufficient entropy to resist enumeration and 
 Poll workers reconstruct their scoped store through:
 
 ```ts
-runtimeStore.forTenant(source.tenantId)
+runtimeStore.forTenant(source.tenantId);
 ```
 
 No scheduler execution occurs in a tenant-neutral store context after source resolution.
@@ -2757,13 +2744,13 @@ The runtime MUST protect itself from unbounded event growth.
 
 At minimum:
 
-* source ingress rate caps;
-* payload byte caps;
-* poll response caps;
-* events-per-poll caps;
-* per-claim batch limits;
-* retention;
-* scheduler batch limits.
+- source ingress rate caps;
+- payload byte caps;
+- poll response caps;
+- events-per-poll caps;
+- per-claim batch limits;
+- retention;
+- scheduler batch limits.
 
 Future tenant quotas may add:
 
@@ -2860,10 +2847,10 @@ id
 
 but:
 
-* provider retries;
-* webhook network delay;
-* polling;
-* redelivery;
+- provider retries;
+- webhook network delay;
+- polling;
+- redelivery;
 
 can produce out-of-order observations.
 
@@ -2887,13 +2874,13 @@ This prevents one poison event from freezing an entire agent.
 
 Assume payloads can contain:
 
-* malicious text;
-* invalid Unicode;
-* oversized arrays;
-* deep nesting;
-* prompt injection;
-* fake IDs;
-* duplicate events.
+- malicious text;
+- invalid Unicode;
+- oversized arrays;
+- deep nesting;
+- prompt injection;
+- fake IDs;
+- duplicate events.
 
 All parsing must be bounded.
 
@@ -2986,19 +2973,19 @@ Add an **Events** section with two views.
 
 Display:
 
-* source name/ID;
-* tenant;
-* service;
-* kind;
-* state;
-* verification status;
-* execution principal;
-* connection;
-* interval;
-* last success;
-* next poll;
-* last event;
-* failure count.
+- source name/ID;
+- tenant;
+- service;
+- kind;
+- state;
+- verification status;
+- execution principal;
+- connection;
+- interval;
+- last success;
+- next poll;
+- last event;
+- failure count.
 
 Actions:
 
@@ -3016,17 +3003,17 @@ disable
 
 Display:
 
-* event ID;
-* source;
-* service;
-* type;
-* received time;
-* occurred time;
-* verification/provenance;
-* payload;
-* payload digest;
-* deliveries;
-* caused runs.
+- event ID;
+- source;
+- service;
+- type;
+- received time;
+- occurred time;
+- verification/provenance;
+- payload;
+- payload digest;
+- deliveries;
+- caused runs.
 
 This creates an important audit path:
 
@@ -3048,20 +3035,20 @@ Ship in four phases.
 
 Implement:
 
-* event source schema;
-* source runtime state;
-* immutable events;
-* delivery schema;
-* claim/ack/release APIs;
-* MCP consumption tools;
-* poll source creation;
-* read-only Action Manifest enforcement;
-* Node scheduler;
-* source leases;
-* poll deduplication;
-* tenant isolation;
-* RFC 0001 authorization;
-* causation event linkage.
+- event source schema;
+- source runtime state;
+- immutable events;
+- delivery schema;
+- claim/ack/release APIs;
+- MCP consumption tools;
+- poll source creation;
+- read-only Action Manifest enforcement;
+- Node scheduler;
+- source leases;
+- poll deduplication;
+- tenant isolation;
+- RFC 0001 authorization;
+- causation event linkage.
 
 Goal:
 
@@ -3073,15 +3060,15 @@ Goal:
 
 Implement:
 
-* public hook handles;
-* handle rotation;
-* HMAC verification;
-* provider verifier registry;
-* replay windows;
-* webhook deduplication;
-* payload caps;
-* encrypted event payload storage;
-* one reference webhook provider.
+- public hook handles;
+- handle rotation;
+- HMAC verification;
+- provider verifier registry;
+- replay windows;
+- webhook deduplication;
+- payload caps;
+- encrypted event payload storage;
+- one reference webhook provider.
 
 Goal:
 
@@ -3093,13 +3080,13 @@ Goal:
 
 Implement:
 
-* Cloudflare `scheduled()` integration;
-* shared scheduler service;
-* distributed source leases;
-* bounded scheduler batches;
-* backoff;
-* source health;
-* cursor support for reference provider.
+- Cloudflare `scheduled()` integration;
+- shared scheduler service;
+- distributed source leases;
+- bounded scheduler batches;
+- backoff;
+- source health;
+- cursor support for reference provider.
 
 Goal:
 
@@ -3111,13 +3098,13 @@ Goal:
 
 Implement:
 
-* source management UI;
-* event inspector;
-* source health;
-* caused-run navigation;
-* strict unsigned-webhook warnings;
-* event retention jobs;
-* operational dashboards.
+- source management UI;
+- event inspector;
+- source health;
+- caused-run navigation;
+- strict unsigned-webhook warnings;
+- event retention jobs;
+- operational dashboards.
 
 Goal:
 
@@ -3384,10 +3371,10 @@ Tenant A and tenant B each have sources and events.
 
 A cannot:
 
-* claim B events;
-* read B events;
-* ack B deliveries;
-* access B sources.
+- claim B events;
+- read B events;
+- ack B deliveries;
+- access B sources.
 
 Use both SQLite and D1 stores.
 
@@ -3505,14 +3492,14 @@ Deferred.
 
 Push requires:
 
-* outbound callback authentication;
-* retries;
-* retry scheduling;
-* callback secret management;
-* SSRF protection;
-* DNS-rebinding protections;
-* delivery dead letters;
-* consumer endpoint health.
+- outbound callback authentication;
+- retries;
+- retry scheduling;
+- callback secret management;
+- SSRF protection;
+- DNS-rebinding protections;
+- delivery dead letters;
+- consumer endpoint health.
 
 Pull is enough for agent loops and layers cleanly on the durable event model.
 
@@ -3526,10 +3513,10 @@ Rejected for initial implementation.
 
 A durable database model provides:
 
-* SQLite parity;
-* D1 parity;
-* local development;
-* simple operations.
+- SQLite parity;
+- D1 parity;
+- local development;
+- simple operations.
 
 The canonical event envelope and delivery abstractions should remain independent enough that high-volume deployments can later move delivery to a broker.
 
@@ -3603,9 +3590,9 @@ Event payloads are operational data required by consumers.
 
 They require:
 
-* encryption;
-* access control;
-* secret sanitization;
+- encryption;
+- access control;
+- secret sanitization;
 
 not indiscriminate log redaction.
 
@@ -3792,9 +3779,9 @@ Consumer-specific delivery-attempt limits and failure inspection.
 
 Use:
 
-* Cloudflare Queues;
-* Kafka;
-* another durable broker;
+- Cloudflare Queues;
+- Kafka;
+- another durable broker;
 
 behind the existing event/delivery abstractions for higher scale.
 
@@ -3846,15 +3833,15 @@ Auditable causal chain
 
 without:
 
-* calling arbitrary agent URLs;
-* introducing a workflow engine;
-* relying on process-local schedulers;
-* using global event acknowledgment;
-* bypassing authorization;
-* losing tenant scope;
-* silently changing provider accounts;
-* losing events during cursor advancement;
-* treating external event contents as trusted instructions.
+- calling arbitrary agent URLs;
+- introducing a workflow engine;
+- relying on process-local schedulers;
+- using global event acknowledgment;
+- bypassing authorization;
+- losing tenant scope;
+- silently changing provider accounts;
+- losing events during cursor advancement;
+- treating external event contents as trusted instructions.
 
 The runtime should be able to answer:
 

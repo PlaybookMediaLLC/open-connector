@@ -12,6 +12,7 @@ import {
   setEgressTrustedHosts,
   setPrivateNetworkAccessAllowed,
 } from "../core/request.ts";
+import { installLensWorker } from "../lens/install-cloudflare.ts"; // lens-seam
 import { ProviderLoader } from "../providers/provider-loader.ts";
 import { executorModules } from "../providers/registry.cloudflare.generated.ts";
 import { isConsoleShellPath } from "./api/console-paths.ts";
@@ -55,6 +56,7 @@ async function createCloudflareApp(env: CloudflareEnv, publicOrigin: string): Pr
     throw new Error("Cloudflare ASSETS binding is required to load the catalog");
   }
   const secretCodec = await createSecretCodec(env.OOMOL_CONNECT_ENCRYPTION_KEY);
+  const lens = await installLensWorker({ env, secretCodec }); // lens-seam
   return await createConnectApp({
     catalog: await loadCatalogOnce(assets),
     providerLoader: new ProviderLoader(executorModules),
@@ -89,6 +91,8 @@ async function createCloudflareApp(env: CloudflareEnv, publicOrigin: string): Pr
       blockedProxies: parseActionPolicyList(env.OOMOL_CONNECT_BLOCKED_PROXIES),
     }),
     allowedCustomOAuth: parseActionPolicyList(env.OOMOL_CONNECT_ALLOWED_CUSTOM_OAUTH),
+    wrapActionRunner: lens.wrapActionRunner, // lens-seam
+    registerStaticRoutes: lens.registerRoutes, // lens-seam
     logger: workerLogger,
     computeRuntimeAuthConfigured: false,
     // Cloudflare compresses on egress itself: Response defaults to
