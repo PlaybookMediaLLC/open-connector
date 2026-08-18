@@ -582,7 +582,7 @@ function validateProductSuccessUrl(value: unknown): void {
     const url = new URL(value);
     if (url.protocol === "http:" || url.protocol === "https:") return;
   } catch {
-    // 统一在下方返回字段错误。
+    // Return the normalized field error below.
   }
   throw inputError("successUrl must be a valid HTTP(S) URL");
 }

@@ -1140,7 +1140,7 @@ async function cancelUnreadResponseBody(response: Response): Promise<void> {
   try {
     await response.body.cancel();
   } catch {
-    // 清理是 best-effort，不能覆盖原始下载或存储错误。
+    // Cleanup is best-effort and must not replace the original download or storage error.
   }
 }
 

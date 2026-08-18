@@ -1,5 +1,6 @@
 import type { TransitFileWriter } from "../../core/types.ts";
 
+import { posix } from "node:path";
 import { compactObject, optionalInteger, optionalString, requiredRawString, requiredString } from "../../core/cast.ts";
 import { readBoundedResponseBytes } from "../../core/request.ts";
 import { providerFetch, ProviderRequestError, readProviderTextBody } from "../provider-runtime.ts";
@@ -79,6 +80,44 @@ export async function getBaiduNetdiskQuota(context: BaiduNetdiskRequestContext):
     freeQuotaBytes: requireInteger(payload.free, "free"),
     expiresWithinSevenDays: payload.expire === true,
   };
+}
+
+export async function createBaiduNetdiskFolder(
+  input: Record<string, unknown>,
+  context: BaiduNetdiskRequestContext,
+): Promise<Record<string, unknown>> {
+  const path = requiredString(input.path, "path");
+  const url = new URL("/rest/2.0/xpan/file", baiduPanBaseUrl);
+  url.searchParams.set("method", "create");
+  const payload = await requestBaiduNetdiskApi(url, context.accessToken, context.fetcher, "write", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      path,
+      isdir: "1",
+      rtype: input.conflictStrategy === "rename" ? "1" : "0",
+    }),
+    signal: context.signal,
+  });
+  const createdPath = requiredString(payload.path, "path");
+  return {
+    id: requireLosslessId(payload.fs_id ?? payload.fsid, "fs_id"),
+    name: posix.basename(createdPath),
+    path: createdPath,
+    kind: "folder",
+    category: null,
+    sizeBytes: null,
+    createdAt: normalizeOptionalTimestamp(payload.ctime),
+    modifiedAt: normalizeOptionalTimestamp(payload.mtime),
+    cloudMd5: null,
+  };
+}
+
+function normalizeOptionalTimestamp(value: unknown): string | null {
+  const seconds = optionalInteger(value);
+  if (seconds == null || seconds < 0) return null;
+  const date = new Date(seconds * 1_000);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 export async function downloadBaiduNetdiskFile(

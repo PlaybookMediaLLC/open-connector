@@ -119,7 +119,7 @@ function applyBaiduMapsSn(
   sk: string | undefined,
 ): Record<string, QueryValue> {
   // Baidu's SN check is an AK-level toggle configured per key in the console
-  // ("请求校验方式": IP whitelist OR SN), NOT a per-endpoint setting: once
+  // This is an account-level request verification mode (IP whitelist or SN), not a per-endpoint setting: once
   // enabled, EVERY request made with that AK needs a valid `sn`. A user only
   // configures an SK when their AK requires SN, so signing exactly when an `sk`
   // is present is correct — and avoids a fragile per-path allowlist where a

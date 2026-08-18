@@ -233,7 +233,7 @@ async function readResponseBody(response: Response): Promise<PayrexxResponse> {
       return payload;
     }
   } catch {
-    // 下方使用统一的 provider error。
+    // Use the normalized provider error below.
   }
   return { message: response.statusText || "Payrexx returned an invalid response" };
 }
