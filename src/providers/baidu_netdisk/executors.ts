@@ -3,7 +3,12 @@ import type { CredentialValidators, ProviderExecutors, TransitFileWriter } from 
 import { optionalString, requiredString } from "../../core/cast.ts";
 import { defineProviderExecutors, requireOAuthCredential } from "../provider-runtime.ts";
 import { executeBaiduNetdiskMcpAction, verifyBaiduNetdiskMcpConnection } from "./runtime-mcp.ts";
-import { downloadBaiduNetdiskFile, fetchBaiduNetdiskAccount, getBaiduNetdiskQuota } from "./runtime.ts";
+import {
+  createBaiduNetdiskFolder,
+  downloadBaiduNetdiskFile,
+  fetchBaiduNetdiskAccount,
+  getBaiduNetdiskQuota,
+} from "./runtime.ts";
 
 interface BaiduNetdiskContext {
   accessToken: string;
@@ -28,6 +33,9 @@ const handlers: Record<string, (input: Record<string, unknown>, context: BaiduNe
   download_file(input, context) {
     return downloadBaiduNetdiskFile(input, context);
   },
+  create_folder(input, context) {
+    return createBaiduNetdiskFolder(input, context);
+  },
 };
 
 for (const actionName of [
@@ -36,7 +44,7 @@ for (const actionName of [
   "semantic_search_files",
   "upload_file_from_url",
   "create_text_file",
-  "create_folder",
+  "create_share_link",
   "copy",
   "move",
   "rename",

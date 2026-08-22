@@ -39,7 +39,7 @@ interface GitlabActionContext {
 }
 
 interface GitlabRequestOptions {
-  method?: "GET" | "POST";
+  method?: "GET" | "POST" | "PUT" | "DELETE";
   query?: Record<string, unknown>;
   body?: Record<string, unknown>;
 }
@@ -60,6 +60,42 @@ export const gitlabActionHandlers: Record<string, GitlabActionHandler> = {
   },
   create_project_issue(input, context) {
     return createGitlabProjectIssue(input, context);
+  },
+  get_project_issue(input, context) {
+    return gitlabRequestJson(
+      `/projects/${readProjectId(input)}/issues/${readRequiredPositiveInteger(input.issueIid, "issueIid")}`,
+      context,
+    );
+  },
+  update_project_issue(input, context) {
+    return updateGitlabProjectIssue(input, context);
+  },
+  delete_project_issue(input, context) {
+    return deleteGitlabResource(
+      `/projects/${readProjectId(input)}/issues/${readRequiredPositiveInteger(input.issueIid, "issueIid")}`,
+      context,
+    );
+  },
+  create_project(input, context) {
+    return createGitlabProject(input, context);
+  },
+  update_project(input, context) {
+    return updateGitlabProject(input, context);
+  },
+  delete_project(input, context) {
+    return deleteGitlabResource(`/projects/${readProjectId(input)}`, context);
+  },
+  list_project_merge_requests(input, context) {
+    return listGitlabProjectMergeRequests(input, context);
+  },
+  create_merge_request(input, context) {
+    return createGitlabMergeRequest(input, context);
+  },
+  update_merge_request(input, context) {
+    return updateGitlabMergeRequest(input, context);
+  },
+  merge_merge_request(input, context) {
+    return mergeGitlabMergeRequest(input, context);
   },
 };
 
@@ -272,6 +308,166 @@ function createGitlabProjectIssue(input: GitlabActionInput, context: GitlabActio
   });
 }
 
+function updateGitlabProjectIssue(input: GitlabActionInput, context: GitlabActionContext): Promise<unknown> {
+  const body = compactObject({
+    title: asOptionalString(input.title),
+    description: asClearableString(input.description),
+    labels: asClearableString(input.labels),
+    add_labels: asClearableString(input.addLabels),
+    remove_labels: asClearableString(input.removeLabels),
+    assignee_ids: Array.isArray(input.assigneeIds) ? input.assigneeIds : undefined,
+    confidential: optionalBoolean(input.confidential),
+    discussion_locked: optionalBoolean(input.discussionLocked),
+    due_date: asOptionalString(input.dueDate),
+    state_event: asOptionalString(input.stateEvent),
+  });
+  ensureUpdateFields(body, "update_project_issue");
+  return gitlabRequestJson(
+    `/projects/${readProjectId(input)}/issues/${readRequiredPositiveInteger(input.issueIid, "issueIid")}`,
+    context,
+    "execute",
+    { method: "PUT", body },
+  );
+}
+
+function createGitlabProject(input: GitlabActionInput, context: GitlabActionContext): Promise<unknown> {
+  return gitlabRequestJson("/projects", context, "execute", {
+    method: "POST",
+    body: compactObject({
+      name: asOptionalString(input.name),
+      path: asOptionalString(input.path),
+      namespace_id: optionalIntegerLike(input.namespaceId, "namespaceId"),
+      description: asOptionalString(input.description),
+      visibility: asOptionalString(input.visibility),
+      initialize_with_readme: optionalBoolean(input.initializeWithReadme),
+      default_branch: asOptionalString(input.defaultBranch),
+    }),
+  });
+}
+
+function updateGitlabProject(input: GitlabActionInput, context: GitlabActionContext): Promise<unknown> {
+  const archived = optionalBoolean(input.archived);
+  const body = compactObject({
+    name: asOptionalString(input.name),
+    path: asOptionalString(input.path),
+    description: asClearableString(input.description),
+    visibility: asOptionalString(input.visibility),
+    default_branch: asOptionalString(input.defaultBranch),
+    issues_access_level: asOptionalString(input.issuesAccessLevel),
+    merge_requests_access_level: asOptionalString(input.mergeRequestsAccessLevel),
+  });
+  if (archived !== undefined) {
+    if (Object.keys(body).length > 0) {
+      throw new ProviderRequestError(400, "archived cannot be combined with other project updates");
+    }
+    const operation = archived ? "archive" : "unarchive";
+    return gitlabRequestJson(`/projects/${readProjectId(input)}/${operation}`, context, "execute", { method: "POST" });
+  }
+  ensureUpdateFields(body, "update_project");
+  return gitlabRequestJson(`/projects/${readProjectId(input)}`, context, "execute", { method: "PUT", body });
+}
+
+async function listGitlabProjectMergeRequests(
+  input: GitlabActionInput,
+  context: GitlabActionContext,
+): Promise<{ mergeRequests: unknown[]; total: number | null; nextPage: number | null }> {
+  const response = await gitlabRequest(`/projects/${readProjectId(input)}/merge_requests`, context, {
+    query: compactObject({
+      state: asOptionalString(input.state),
+      search: asOptionalString(input.search),
+      source_branch: asOptionalString(input.sourceBranch),
+      target_branch: asOptionalString(input.targetBranch),
+      order_by: asOptionalString(input.orderBy),
+      sort: asOptionalString(input.sort),
+      page: asOptionalPositiveInteger(input.page, "page"),
+      per_page: asOptionalPositiveInteger(input.perPage, "perPage"),
+    }),
+  });
+  const payload = await readGitlabPayload(response);
+  if (!response.ok) {
+    throw createGitlabError(response, payload, "execute");
+  }
+  if (!Array.isArray(payload)) {
+    throw new ProviderRequestError(502, "gitlab merge requests response is not an array", payload);
+  }
+  return { mergeRequests: payload, ...readPagination(response.headers) };
+}
+
+function createGitlabMergeRequest(input: GitlabActionInput, context: GitlabActionContext): Promise<unknown> {
+  return gitlabRequestJson(`/projects/${readProjectId(input)}/merge_requests`, context, "execute", {
+    method: "POST",
+    body: compactObject({
+      source_branch: asOptionalString(input.sourceBranch),
+      target_branch: asOptionalString(input.targetBranch),
+      title: asOptionalString(input.title),
+      description: asOptionalString(input.description),
+      target_project_id: optionalIntegerLike(input.targetProjectId, "targetProjectId"),
+      assignee_ids: Array.isArray(input.assigneeIds) ? input.assigneeIds : undefined,
+      reviewer_ids: Array.isArray(input.reviewerIds) ? input.reviewerIds : undefined,
+      labels: asOptionalString(input.labels),
+      remove_source_branch: optionalBoolean(input.removeSourceBranch),
+      squash: optionalBoolean(input.squash),
+    }),
+  });
+}
+
+function updateGitlabMergeRequest(input: GitlabActionInput, context: GitlabActionContext): Promise<unknown> {
+  const body = compactObject({
+    title: asOptionalString(input.title),
+    description: asClearableString(input.description),
+    target_branch: asOptionalString(input.targetBranch),
+    state_event: asOptionalString(input.stateEvent),
+    labels: asClearableString(input.labels),
+    assignee_ids: Array.isArray(input.assigneeIds) ? input.assigneeIds : undefined,
+    reviewer_ids: Array.isArray(input.reviewerIds) ? input.reviewerIds : undefined,
+    milestone_id: optionalIntegerLike(input.milestoneId, "milestoneId"),
+    remove_source_branch: optionalBoolean(input.removeSourceBranch),
+    squash: optionalBoolean(input.squash),
+    allow_collaboration: optionalBoolean(input.allowCollaboration),
+  });
+  ensureUpdateFields(body, "update_merge_request");
+  return gitlabRequestJson(
+    `/projects/${readProjectId(input)}/merge_requests/${readRequiredPositiveInteger(input.mergeRequestIid, "mergeRequestIid")}`,
+    context,
+    "execute",
+    { method: "PUT", body },
+  );
+}
+
+function mergeGitlabMergeRequest(input: GitlabActionInput, context: GitlabActionContext): Promise<unknown> {
+  return gitlabRequestJson(
+    `/projects/${readProjectId(input)}/merge_requests/${readRequiredPositiveInteger(input.mergeRequestIid, "mergeRequestIid")}/merge`,
+    context,
+    "execute",
+    {
+      method: "PUT",
+      body: compactObject({
+        auto_merge: optionalBoolean(input.autoMerge),
+        sha: asOptionalString(input.sha),
+        should_remove_source_branch: optionalBoolean(input.shouldRemoveSourceBranch),
+        squash: optionalBoolean(input.squash),
+        merge_commit_message: asOptionalString(input.mergeCommitMessage),
+        squash_commit_message: asOptionalString(input.squashCommitMessage),
+      }),
+    },
+  );
+}
+
+async function deleteGitlabResource(path: string, context: GitlabActionContext): Promise<{ deleted: boolean }> {
+  await gitlabRequestJson(path, context, "execute", { method: "DELETE" });
+  return { deleted: true };
+}
+
+function ensureUpdateFields(body: Record<string, unknown>, actionName: string): void {
+  if (Object.keys(body).length === 0) {
+    throw new ProviderRequestError(400, `${actionName} requires at least one field to update`);
+  }
+}
+
+function asClearableString(value: unknown): string | undefined {
+  return typeof value === "string" ? value.trim() : undefined;
+}
+
 async function gitlabRequestJson(
   path: string,
   context: GitlabActionContext,
@@ -423,7 +619,24 @@ function readProjectId(input: GitlabActionInput): string {
   if (!projectId) {
     throw new ProviderRequestError(400, "projectId is required");
   }
+  if (
+    /^(?:\.|%2e){1,2}$/iu.test(projectId) ||
+    projectId.includes("/") ||
+    projectId.includes("\\") ||
+    projectId.includes("?") ||
+    projectId.includes("#")
+  ) {
+    throw new ProviderRequestError(400, "projectId must be a numeric ID or URL-encoded project path");
+  }
   return projectId;
+}
+
+function readRequiredPositiveInteger(value: unknown, fieldName: string): number {
+  const parsed = asOptionalPositiveInteger(value, fieldName);
+  if (parsed === undefined) {
+    throw new ProviderRequestError(400, `${fieldName} is required`);
+  }
+  return parsed;
 }
 
 function trimOptionalString(value: unknown): string | undefined {

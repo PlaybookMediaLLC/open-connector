@@ -270,7 +270,7 @@ function mapProductlaneError(status: number, payload: unknown, phase: "validate"
   }
 
   if (status === 403) {
-    // Productlane 官方错误契约区分 scope_required 与 forbidden：https://productlane.mintlify.dev/docs/api-v2/errors
+    // Productlane's official error contract distinguishes scope_required from forbidden: https://productlane.mintlify.dev/docs/api-v2/errors
     if (phase === "execute" && providerCode === "scope_required") {
       return new ProviderRequestError(403, message);
     }

@@ -109,6 +109,7 @@ async function withCloudflareMcpClient<T>(
       fetcher: input.fetcher,
       headers,
       signal: input.signal,
+      protocolVersion: "modern",
       mapError: mapCloudflareMcpError,
     },
     run,
