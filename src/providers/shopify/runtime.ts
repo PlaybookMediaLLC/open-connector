@@ -1,4 +1,5 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
+import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ProviderRuntimeHandler } from "../provider-runtime.ts";
 
 import { compactObject, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
@@ -9,7 +10,6 @@ export const shopifyRestApiVersion = "2026-04";
 
 const credentialHelpUrl = "https://shopify.dev/docs/apps/build/authentication-authorization/access-tokens";
 const shopPath = "/shop.json";
-const contentValidationPath = "/blogs/count.json";
 
 type ShopifyRequestPhase = "validate" | "execute";
 interface ShopifyPagination {
@@ -29,7 +29,7 @@ export interface ShopifyActionContext {
   signal?: AbortSignal;
 }
 
-export const shopifyActionHandlers: Record<string, ProviderRuntimeHandler<ShopifyActionContext>> = {
+export const shopifyActionHandlers: ProviderActionHandlers<"shopify", ProviderRuntimeHandler<ShopifyActionContext>> = {
   async get_shop(_input, context) {
     return {
       shop: await getShopifyResource(context, shopPath, "shop"),
@@ -193,11 +193,6 @@ export async function validateShopifyCredential(
     phase: "validate",
   });
   const shop = requireRecord(requireRecord(shopResult.payload, "Shopify shop response").shop, "shop");
-  await requestShopifyRest({
-    context,
-    path: contentValidationPath,
-    phase: "validate",
-  });
 
   return {
     profile: {
@@ -211,7 +206,6 @@ export async function validateShopifyCredential(
       restApiVersion: shopifyRestApiVersion,
       credentialHelpUrl,
       validationEndpoint: shopPath,
-      contentScopeValidationEndpoint: contentValidationPath,
       shopId: optionalNumber(shop.id),
       myshopifyDomain: optionalString(shop.myshopify_domain),
     }),

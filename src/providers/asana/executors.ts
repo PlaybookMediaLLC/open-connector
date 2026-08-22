@@ -1,7 +1,12 @@
 import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { AsanaActionHandler } from "./runtime.ts";
 
-import { compactObject, optionalRecord, optionalString, requiredRecord } from "../../core/cast.ts";
-import { defineBearerProviderExecutors, ProviderRequestError } from "../provider-runtime.ts";
+import { compactObject, optionalString, requiredRecord } from "../../core/cast.ts";
+import {
+  combineProviderActionHandlers,
+  defineBearerProviderExecutors,
+  ProviderRequestError,
+} from "../provider-runtime.ts";
 import { attachmentActionHandlers } from "./runtime-attachments.ts";
 import { customFieldActionHandlers } from "./runtime-custom-fields.ts";
 import { projectSectionActionHandlers } from "./runtime-projects-sections.ts";
@@ -16,8 +21,8 @@ const asanaValidationPath = "/users/me";
 
 export const executors: ProviderExecutors = defineBearerProviderExecutors(
   service,
-  Object.assign(
-    {},
+  combineProviderActionHandlers<"asana", AsanaActionHandler>(
+    service,
     workspaceUserTeamActionHandlers,
     projectSectionActionHandlers,
     taskActionHandlers,
@@ -51,7 +56,7 @@ async function validateAsanaCredential(
     },
     phase: "validate",
     query: {
-      opt_fields: ["name", "email", "workspaces", "workspaces.name"].join(","),
+      opt_fields: ["name", "email"].join(","),
     },
   });
 
@@ -59,12 +64,6 @@ async function validateAsanaCredential(
   const userId = optionalString(user.gid);
   const name = optionalString(user.name);
   const email = optionalString(user.email);
-  const workspaces = Array.isArray(user.workspaces)
-    ? user.workspaces.map((workspace) => optionalRecord(workspace)).filter((workspace) => !!workspace)
-    : [];
-  const workspaceNames = workspaces
-    .map((workspace) => optionalString(workspace.name))
-    .filter((workspaceName) => !!workspaceName);
 
   return {
     profile: {
@@ -78,8 +77,6 @@ async function validateAsanaCredential(
       userId,
       name,
       email,
-      workspaceCount: workspaces.length,
-      workspaceNames,
     }),
   };
 }
