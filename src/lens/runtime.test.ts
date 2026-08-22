@@ -62,6 +62,7 @@ async function fixture(policy: Partial<LensPolicy> = {}): Promise<Fixture> {
       allowedActions: [],
       blockedActions: [],
       allowedProxies: [],
+      allowedConnections: [],
       createdAt: new Date().toISOString(),
     },
   ];
