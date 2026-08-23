@@ -25,12 +25,14 @@ function fakeInnerRunner(calls: RunActionInput[], providerOk: { value: boolean }
   return {
     async run(input: RunActionInput): Promise<ActionRunResult> {
       calls.push(input);
-      const decision = input.policy?.evaluate({ id: input.actionId } as ActionDefinition);
-      if (decision && !decision.allowed) {
+      const actionDecision = input.policy?.evaluate({ id: input.actionId } as ActionDefinition);
+      const connectionDecision = input.policy?.evaluateConnection(input.connectionName);
+      const denial = actionDecision && !actionDecision.allowed ? actionDecision : connectionDecision;
+      if (denial && !denial.allowed) {
         return {
           executionId: crypto.randomUUID(),
           auditPersisted: true,
-          result: { ok: false, error: { code: decision.code, message: decision.message } },
+          result: { ok: false, error: { code: denial.code, message: denial.message } },
         };
       }
       return {
@@ -155,9 +157,9 @@ describe("LensRuntime execution path", () => {
 describe("LensRuntime approval lifecycle", () => {
   const approvalPolicy: Partial<LensPolicy> = { approvalRequired: ["github.*"] };
 
-  async function requestApproval(f: Fixture): Promise<string> {
+  async function requestApproval(f: Fixture, overrides: Partial<RunActionInput> = {}): Promise<string> {
     const callsBefore = f.calls.length;
-    const pending = await f.wrapped.run({ ...baseRun, runtimeTokenId: "tok_a" });
+    const pending = await f.wrapped.run({ ...baseRun, runtimeTokenId: "tok_a", ...overrides });
     expect(pending?.result.error?.code).toBe("approval_required");
     const details = pending?.result.error?.details as { approvalId: string; status: string };
     expect(details.status).toBe("pending_approval");
@@ -229,6 +231,17 @@ describe("LensRuntime approval lifecycle", () => {
     f.tokenRecords.length = 0;
     const revoked = await f.runtime.resolveApproval(revokedId, "console");
     expect(revoked).toMatchObject({ ok: false, errorCode: "execution_grant_invalid" });
+  });
+
+  it("preserves upstream connection grants during approval revalidation", async () => {
+    const f = await fixture(approvalPolicy);
+    f.tokenRecords[0]!.allowedConnections = ["conn_allowed"];
+    const approvalId = await requestApproval(f, { connectionName: "conn_blocked" });
+
+    const result = await f.runtime.resolveApproval(approvalId, "console");
+
+    expect(result).toMatchObject({ ok: false, state: "execution_failed" });
+    expect(await f.runtime.approvals.get(approvalId)).toMatchObject({ resolutionReason: "connection_not_allowed" });
   });
 
   it("expires overdue approvals instead of executing them", async () => {

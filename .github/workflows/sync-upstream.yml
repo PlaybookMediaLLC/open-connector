@@ -65,8 +65,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # No delta against main: nothing to open.
-          if git diff --quiet origin/main upstream; then
+          # No head-side delta against the merge base: nothing to open. A
+          # two-dot tree diff is wrong here because main normally contains
+          # fork commits that the long-lived upstream branch does not.
+          if git diff --quiet origin/main...upstream; then
             echo "upstream branch matches main; no PR needed."
             exit 0
           fi
