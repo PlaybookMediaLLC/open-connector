@@ -391,6 +391,7 @@ export class LensRuntime {
         allowedActions: record.allowedActions,
         blockedActions: record.blockedActions,
         allowedProxies: record.allowedProxies,
+        allowedConnections: record.allowedConnections,
       }),
     };
   }
