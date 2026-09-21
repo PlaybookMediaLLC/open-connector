@@ -36,14 +36,16 @@ The strategy has three rules:
 A seam is a line in an upstream-owned file that mounts lens code. Keep seams rare, short,
 and marked. Current registry:
 
-| File                        | Seam                                                                                                                               |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `src/server/connect-app.ts` | `wrapActionRunner?` option; applied after `ActionRunner` construction                                                              |
-| `src/server/index.ts`       | import + `installLens(...)` + `lens.registerRoutes(app)` in the static-routes callback + `wrapActionRunner: lens.wrapActionRunner` |
-| `src/server/cloudflare.ts`  | import + `installLensWorker({ env, secretCodec })` + `wrapActionRunner` + `registerStaticRoutes: lens.registerRoutes`              |
+| File                              | Seam                                                                                                 |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `src/server/connect-app.ts`       | `wrapActionRunner?` option; applied after `ActionRunner` construction                                |
+| `src/server/connector-runtime.ts` | generic runtime extension hook; passes shared dependencies and applies its routes and action wrapper |
+| `src/server/index.ts`             | import + `installLens(...)` through the runtime extension hook                                       |
+| `src/server/cloudflare.ts`        | import + `installLensWorker(...)` + `wrapActionRunner` + `registerStaticRoutes: lens.registerRoutes` |
+| `AGENTS.md`                       | one trailing note that points agents to `CLAUDE.md`                                                  |
 
 Every seam line ends with `// lens-seam` (or a `lens-seam:` doc comment). To audit:
-`grep -rn "lens-seam" src/`.
+`grep -rn "lens-seam" src/ AGENTS.md`.
 
 The `wrapActionRunner` hook is deliberately generic. It is a candidate to propose upstream;
 if accepted, the `connect-app.ts` seam disappears.

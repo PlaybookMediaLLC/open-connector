@@ -1,8 +1,19 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { GmailDraftResource, GmailMessageResource, GmailThreadResource } from "./message.ts";
 
-import { defineProviderExecutors, ProviderRequestError, requireOAuthCredential } from "../provider-runtime.ts";
+import { googleBearerProxyAuth, googleServiceAccountValidator, resolveGoogleAccessToken } from "../google-auth.ts";
+import {
+  defineProviderExecutors,
+  defineProviderProxy,
+  ProviderRequestError,
+  readProviderJsonBody,
+} from "../provider-runtime.ts";
 import {
   buildRecipients,
   encodeMimeMessage,
@@ -16,7 +27,9 @@ import {
   resolveReplyHeaders,
   summarizeGmailMessage,
 } from "./message.ts";
+import { gmailOAuthScopes } from "./scopes.ts";
 
+const service = "gmail";
 const gmailApiBaseUrl = "https://gmail.googleapis.com/gmail/v1";
 const detailHydrationBatchSize = 10;
 const defaultFetchEmailsMaxResults = 20;
@@ -29,7 +42,7 @@ interface ActionContext {
 
 type ActionHandler = (input: Record<string, unknown>, context: ActionContext) => Promise<unknown>;
 
-export const gmailActionHandlers: ProviderActionHandlers<"gmail", ActionHandler> = {
+export const gmailActionHandlers: ProviderActionHandlers<typeof service, ActionHandler> = {
   async search_threads(input, { userId, accessToken, fetcher }) {
     const output = await listThreads(input, userId, accessToken, fetcher);
     return {
@@ -189,12 +202,24 @@ export const gmailActionHandlers: ProviderActionHandlers<"gmail", ActionHandler>
 };
 
 export const executors: ProviderExecutors = defineProviderExecutors<ActionContext>({
-  service: "gmail",
+  service,
   handlers: gmailActionHandlers,
   async createContext(context: ExecutionContext, fetcher: typeof fetch): Promise<ActionContext> {
-    const credential = await requireOAuthCredential(context, "gmail");
-    return { userId: "me", accessToken: credential.accessToken, fetcher };
+    const resolved = await resolveGoogleAccessToken({
+      service,
+      scopes: gmailOAuthScopes,
+      credential: await context.getCredential(service),
+      fetcher,
+      signal: context.signal,
+    });
+    return { userId: "me", accessToken: resolved.accessToken, fetcher };
   },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: gmailApiBaseUrl,
+  auth: googleBearerProxyAuth(gmailOAuthScopes),
 });
 
 export const credentialValidators: CredentialValidators = {
@@ -207,6 +232,7 @@ export const credentialValidators: CredentialValidators = {
       },
     };
   },
+  customCredential: googleServiceAccountValidator(service, gmailOAuthScopes),
 };
 
 async function fetchEmails(input: Record<string, unknown>, userId: string, accessToken: string, fetcher: typeof fetch) {
@@ -801,7 +827,7 @@ async function listHistory(input: Record<string, unknown>, userId: string, acces
 
 async function listFilters(userId: string, accessToken: string, fetcher: typeof fetch) {
   const payload = normalizeNullableObjectResponse(
-    await fetchJson<unknown>(gmailUserUrl(userId, "settings", "filters"), accessToken, fetcher),
+    await fetchNullableJson(gmailUserUrl(userId, "settings", "filters"), accessToken, fetcher, "gmail filters list"),
     "gmail filters list",
   );
   const filters = payload.filter;
@@ -875,7 +901,12 @@ async function updateSettingsResource(
 
 async function listForwardingAddresses(userId: string, accessToken: string, fetcher: typeof fetch) {
   const payload = normalizeNullableObjectResponse(
-    await fetchJson<unknown>(gmailUserUrl(userId, "settings", "forwardingAddresses"), accessToken, fetcher),
+    await fetchNullableJson(
+      gmailUserUrl(userId, "settings", "forwardingAddresses"),
+      accessToken,
+      fetcher,
+      "gmail forwarding addresses list",
+    ),
     "gmail forwarding addresses list",
   );
   const forwardingAddresses = payload.forwardingAddresses;
@@ -1009,16 +1040,36 @@ function normalizeNullableObjectResponse(value: unknown, operation: string) {
 }
 
 async function fetchJson<T>(url: string, accessToken: string, fetcher: typeof fetch, init: RequestInit = {}) {
-  const requestInit = buildGmailRequestInit(accessToken, init);
-  const response = await fetcher(url, requestInit);
-  await assertGmailResponse(response);
+  const response = await sendGmailRequest(url, accessToken, fetcher, init);
   return (await response.json()) as T;
 }
 
+async function fetchNullableJson(
+  url: string,
+  accessToken: string,
+  fetcher: typeof fetch,
+  operation: string,
+): Promise<unknown> {
+  return readProviderJsonBody(await sendGmailRequest(url, accessToken, fetcher), {
+    emptyBody: null,
+    invalidJsonMessage: `${operation} response must be valid JSON`,
+  });
+}
+
 async function fetchEmpty(url: string, accessToken: string, fetcher: typeof fetch, init: RequestInit = {}) {
+  await sendGmailRequest(url, accessToken, fetcher, init);
+}
+
+async function sendGmailRequest(
+  url: string,
+  accessToken: string,
+  fetcher: typeof fetch,
+  init: RequestInit = {},
+): Promise<Response> {
   const requestInit = buildGmailRequestInit(accessToken, init);
   const response = await fetcher(url, requestInit);
   await assertGmailResponse(response);
+  return response;
 }
 
 function buildGmailRequestInit(accessToken: string, init: RequestInit) {

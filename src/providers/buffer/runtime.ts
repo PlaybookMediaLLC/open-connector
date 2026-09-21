@@ -3,7 +3,13 @@ import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } fro
 
 import { optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
 import { assertPublicHttpUrl } from "../../core/request.ts";
-import { providerUserAgent, ProviderRequestError, readProviderJsonBody } from "../provider-runtime.ts";
+import {
+  providerInputError,
+  providerResponseError,
+  providerUserAgent,
+  ProviderRequestError,
+  readProviderJsonBody,
+} from "../provider-runtime.ts";
 
 const apiUrl = "https://api.buffer.com";
 
@@ -17,7 +23,9 @@ export const bufferActionHandlers: Record<string, BufferActionHandler> = {
     const account = optionalRecord(
       await bufferField(context, "account", "query { account { organizations { id name ownerEmail } } }"),
     );
-    if (!Array.isArray(account?.organizations)) throw providerResponseError("account organizations");
+    if (!Array.isArray(account?.organizations)) {
+      throw providerResponseError("Buffer returned invalid account organizations.");
+    }
     return account.organizations;
   },
   async list_channels(input, context): Promise<unknown> {
@@ -25,7 +33,7 @@ export const bufferActionHandlers: Record<string, BufferActionHandler> = {
       context,
       "channels",
       "query ListChannels($organizationId: ID!) { channels(input: { organizationId: $organizationId }) { id name displayName service avatar isQueuePaused } }",
-      { organizationId: requiredString(input.organizationId, "organizationId", inputError) },
+      { organizationId: requiredString(input.organizationId, "organizationId", providerInputError) },
     );
   },
   async get_channel(input, context): Promise<unknown> {
@@ -33,7 +41,7 @@ export const bufferActionHandlers: Record<string, BufferActionHandler> = {
       context,
       "channel",
       "query GetChannel($id: ID!) { channel(input: { id: $id }) { id name displayName service avatar isQueuePaused } }",
-      { id: requiredString(input.channelId, "channelId", inputError) },
+      { id: requiredString(input.channelId, "channelId", providerInputError) },
     );
   },
   async list_posts(input, context): Promise<unknown> {
@@ -42,7 +50,7 @@ export const bufferActionHandlers: Record<string, BufferActionHandler> = {
       "posts",
       "query ListPosts($organizationId: ID!, $after: String, $first: Int) { posts(after: $after, first: $first, input: { organizationId: $organizationId }) { pageInfo { startCursor endCursor hasNextPage } edges { node { id text createdAt channelId } } } }",
       {
-        organizationId: requiredString(input.organizationId, "organizationId", inputError),
+        organizationId: requiredString(input.organizationId, "organizationId", providerInputError),
         after: optionalString(input.after),
         first: typeof input.first === "number" ? input.first : undefined,
       },
@@ -53,7 +61,7 @@ export const bufferActionHandlers: Record<string, BufferActionHandler> = {
       context,
       "post",
       "query GetPost($id: ID!) { post(input: { id: $id }) { id text channelId metrics { type name value unit } metricsUpdatedAt } }",
-      { id: requiredString(input.postId, "postId", inputError) },
+      { id: requiredString(input.postId, "postId", providerInputError) },
     );
   },
   async create_post(input, context): Promise<unknown> {
@@ -90,7 +98,7 @@ async function bufferField(
   variables: Record<string, unknown> = {},
 ): Promise<unknown> {
   const data = await bufferRequest(context, query, variables);
-  if (!(field in data)) throw providerResponseError(field);
+  if (!(field in data)) throw providerResponseError(`Buffer returned invalid ${field}.`);
   return data[field];
 }
 
@@ -126,7 +134,7 @@ async function bufferRequest(
     );
   }
   const data = optionalRecord(record?.data);
-  if (!data) throw providerResponseError("response data");
+  if (!data) throw providerResponseError("Buffer returned invalid response data.");
   return data;
 }
 
@@ -137,18 +145,10 @@ function validateAssetUrls(input: unknown): void {
     for (const kind of ["image", "video", "document", "link"]) {
       const details = optionalRecord(record?.[kind]);
       if (!details) continue;
-      assertPublicHttpUrl(requiredString(details.url, `assets ${kind} url`, inputError), {
+      assertPublicHttpUrl(requiredString(details.url, `assets ${kind} url`, providerInputError), {
         fieldName: `assets ${kind} url`,
-        createError: inputError,
+        createError: providerInputError,
       });
     }
   }
-}
-
-function inputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
-function providerResponseError(field: string): ProviderRequestError {
-  return new ProviderRequestError(502, `Buffer returned invalid ${field}.`);
 }

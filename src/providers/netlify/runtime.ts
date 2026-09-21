@@ -1,5 +1,4 @@
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { NetlifyActionName } from "./actions.ts";
 
 import { Buffer } from "node:buffer";
 import { compactObject, optionalBoolean, optionalRecord, optionalString } from "../../core/cast.ts";
@@ -74,6 +73,34 @@ export const netlifyActionHandlers: ProviderActionHandlers<"netlify", NetlifyAct
       }),
     );
     return { sites, count: sites.length };
+  },
+
+  async create_site(input, context) {
+    return {
+      site: objectPayload(
+        await netlifyRequestJson({
+          accessToken: context.accessToken,
+          method: "POST",
+          path: "/sites",
+          query: compactObject({
+            configure_dns: readOptionalBooleanString(input.configureDns),
+          }),
+          body: JSON.stringify(
+            compactObject({
+              name: readOptionalNonEmptyString(input.name),
+              account_id: readOptionalNonEmptyString(input.accountId),
+              custom_domain: readOptionalNonEmptyString(input.customDomain),
+              domain_aliases: input.domainAliases,
+              notification_email: readOptionalNonEmptyString(input.notificationEmail),
+              force_ssl: optionalBoolean(input.forceSsl),
+            }),
+          ),
+          contentType: "application/json",
+          fetcher: context.fetcher,
+          phase: "execute",
+        }),
+      ),
+    };
   },
 
   async get_site(input: Record<string, unknown>, context: NetlifyActionContext): Promise<unknown> {
@@ -331,19 +358,6 @@ export async function validateNetlifyCredential(
       siteCount: user.site_count,
     }),
   };
-}
-
-export async function executeNetlifyAction(
-  actionName: NetlifyActionName,
-  input: Record<string, unknown>,
-  context: NetlifyActionContext,
-): Promise<unknown> {
-  const handler = netlifyActionHandlers[actionName];
-  if (!handler) {
-    throw new ProviderRequestError(400, `unknown netlify action: ${actionName}`);
-  }
-
-  return handler(input, context);
 }
 
 async function postDeployAction(

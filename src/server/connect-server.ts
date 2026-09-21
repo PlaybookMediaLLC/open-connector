@@ -1,30 +1,30 @@
 import type { CatalogStore, RuntimeActionDefinition } from "../catalog-store.ts";
 import type { ConnectionService, ConnectionSummary } from "../connection-service.ts";
 import type { ActionPolicySnapshot } from "../core/action-policy.ts";
-import type { ActionSearchIndexProvider, ActionSearchResult } from "../core/action-search.ts";
+import type { ActionSearchDocument, ActionSearchIndexProvider } from "../core/action-search.ts";
+import type { RuntimeLogger, TransitFileUpload } from "../core/types.ts";
+import type { MarketplaceConfigInput, MarketplaceService } from "../marketplace/marketplace-service.ts";
 import type { OAuthClientConfigInput } from "../oauth/oauth-client-config-service.ts";
 import type { IProviderLoader } from "../providers/provider-loader.ts";
 import type { LocalAuthOptions } from "./api/auth.ts";
 import type { RuntimeActionHttpResult } from "./api/runtime-api.ts";
-import type { ITransitFileService, TransitFileUpload } from "./files/transit-file-store.ts";
-import type { Logger } from "./logger.ts";
+import type { ITransitFileService } from "./files/transit-file-store.ts";
 import type { IIdempotencyStore } from "./storage/idempotency-store.ts";
 import type { IRuntimePolicyStore } from "./storage/runtime-policy-store.ts";
 import type { RunLogCaller, RunLogListInput } from "./storage/runtime-store.ts";
 import type { RuntimeGrant, RuntimeTokenService } from "./storage/runtime-token-service.ts";
-import type { Context } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 
-import { createMcpHandler } from "@modelcontextprotocol/server";
-import { Scalar } from "@scalar/hono-api-reference";
 import { Hono } from "hono";
 import { compress } from "hono/compress";
 import { ConnectionError, defaultConnectionName } from "../connection-service.ts";
 import { ActionPolicyService, emptyPolicyRules } from "../core/action-policy.ts";
 import { DEFAULT_ACTION_SEARCH_LIMIT, createActionSearchIndexProvider, searchActions } from "../core/action-search.ts";
 import { optionalRecord, optionalString, requiredString, requiredStringArray } from "../core/cast.ts";
-import { createMcpServer, listMcpToolSummaries } from "../mcp.ts";
+import { PromiseCache } from "../core/promise-cache.ts";
+import { MarketplaceError } from "../marketplace/marketplace-service.ts";
 import { OAuthClientConfigError, OAuthClientConfigService } from "../oauth/oauth-client-config-service.ts";
-import { OAuthFlowError, OAuthFlowService } from "../oauth/oauth-flow-service.ts";
+import { OAuthCallbackError, OAuthFlowError, OAuthFlowService } from "../oauth/oauth-flow-service.ts";
 import {
   ActionInputDepthError,
   createIdempotencyExpiry,
@@ -36,9 +36,9 @@ import { ActionRunner } from "./actions/action-runner.ts";
 import { renderActionMarkdown } from "./api/action-markdown.ts";
 import { clearLocalAuthCookie, createLocalAuthMiddleware, readLocalAuthSession, readRuntimeGrant } from "./api/auth.ts";
 import { getResponseCachePolicy } from "./api/cache-policy.ts";
+import { createConnectionRoutes } from "./api/connection-routes.ts";
 import { HttpRequestError, internalError, jsonError, notFound, readJsonBody } from "./api/http-utils.ts";
 import { renderOAuthCompletionPage } from "./api/oauth-completion-page.ts";
-import { createOpenApiDocument } from "./api/openapi.ts";
 import { policyRequestMaxBytes, readRuntimePolicyRules, readTokenPolicy } from "./api/policy-input.ts";
 import {
   mapConnectionErrorStatus,
@@ -48,21 +48,69 @@ import {
   serializeRuntimeConnectedApp,
   serializeRuntimeFailure,
   serializeRuntimeProvider,
+  serializeRuntimeProviderSetup,
   unknownActionFailure,
+  unknownServiceFailure,
   writeRuntimeActionHttpResult,
   writeRuntimeFailure,
   writeRuntimeSuccess,
 } from "./api/runtime-api.ts";
-import { createTransitFileResponse, TransitFileError } from "./files/transit-file-store.ts";
+import { TransitFileError } from "./files/transit-file-store.ts";
 import { ProxyRunner } from "./proxy/proxy-runner.ts";
 import { decodeRunLogCursor } from "./storage/runtime-store.ts";
 import { summarizeRuntimeToken } from "./storage/runtime-token-service.ts";
+
+type McpModule = typeof import("../mcp.ts");
+
+/**
+ * The MCP module pulls in @modelcontextprotocol/server and zod, which no other startup path needs, so it is
+ * loaded on the first /mcp request. The cache shares one in-flight import; a rejected import is evicted so
+ * transient resolution failures retry, while evaluation errors rethrow identically.
+ */
+const mcpModule = new PromiseCache<McpModule>();
+
+function loadMcpModule(): Promise<McpModule> {
+  return mcpModule.get("", () => import("../mcp.ts"));
+}
+
+/** The Scalar API reference is only rendered for /docs, so its package is loaded on the first request. */
+const docsHandler = new PromiseCache<MiddlewareHandler>();
+
+function loadDocsHandler(openapiUrl = "/openapi.json"): Promise<MiddlewareHandler> {
+  return docsHandler.get(openapiUrl, async () => {
+    const { Scalar } = await import("@scalar/hono-api-reference");
+    return Scalar({
+      pageTitle: "OOMOL Connect API Reference",
+      url: openapiUrl,
+      theme: "default",
+      darkMode: false,
+      forceDarkModeState: "light",
+      customCss: `
+          :root {
+            --scalar-color-accent: rgb(59, 99, 251);
+            --scalar-background-accent: rgba(59, 99, 251, 0.12);
+          }
+        `,
+    });
+  });
+}
+
+/**
+ * Import and evaluate the modules the /mcp and /docs routes defer to their first request. The Node server never
+ * calls this, so its startup graph stays small; Cloudflare Workers call it at app creation so an isolate keeps
+ * paying module evaluation up front rather than on its first MCP or docs request.
+ */
+export async function preloadOptionalServerModules(): Promise<void> {
+  await Promise.all([loadMcpModule(), loadDocsHandler()]);
+}
 
 /**
  * Dependencies required to construct the local connector server.
  */
 export interface IConnectServerOptions {
   catalog: CatalogStore;
+  /** Public origin of this runtime, used for the HTTP request examples in Action guides. */
+  publicOrigin: string;
   providerLoader: IProviderLoader;
   connections: ConnectionService;
   oauthClientConfigs: OAuthClientConfigService;
@@ -72,14 +120,15 @@ export interface IConnectServerOptions {
   idempotency: IIdempotencyStore;
   transitFiles: ITransitFileService;
   uploadTransitFile?: (request: Request) => Promise<TransitFileUpload>;
-  staticRoot?: string;
   auth?: LocalAuthOptions;
   actionPolicy?: ActionPolicyService;
   runtimePolicyStore: IRuntimePolicyStore;
   actionSearch?: ActionSearchIndexProvider;
   registerStaticRoutes?: (app: Hono) => void;
-  logger?: Logger;
+  logger?: RuntimeLogger;
   compressApiResponses?: boolean;
+  serveDocumentation?: boolean;
+  marketplace?: MarketplaceService;
 }
 
 /**
@@ -101,7 +150,6 @@ export class ConnectServer {
       catalog: options.catalog,
       providerLoader: options.providerLoader,
       connections: options.connections,
-      actionPolicy: this.actionPolicy,
       logger: options.logger,
     });
   }
@@ -132,12 +180,28 @@ export class ConnectServer {
       app.use("/api/*", compress());
     }
     app.use("*", createLocalAuthMiddleware(auth));
+    if (this.options.marketplace) {
+      app.get("/api/marketplace", (context) => context.json(this.options.marketplace!.getState()));
+      app.put("/api/marketplace", (context) => this.configureMarketplace(context));
+      app.patch("/api/marketplace", (context) => this.configureMarketplace(context));
+      app.delete("/api/marketplace", (context) => this.deleteMarketplace(context));
+      app.get("/api/provider-preferences", async (context) =>
+        context.json(await this.options.marketplace!.listProviderPreferences()),
+      );
+      app.patch("/api/provider-preferences/:service", (context) =>
+        this.updateProviderPreference(context, context.req.param("service")),
+      );
+    }
     app.get("/v1/health", (context) => writeRuntimeSuccess(context, { ok: true, runtime: "oomol-connect" }));
+    app.get("/v1/providers/:service/setup", (context) =>
+      this.getRuntimeProviderSetup(context, context.req.param("service")),
+    );
     app.get("/v1/providers", (context) => this.listRuntimeProviders(context));
     app.get("/v1/actions", (context) => this.listRuntimeActions(context));
     app.get("/v1/actions/search", (context) => this.searchRuntimeActions(context));
     app.get("/v1/actions/:actionId", (context) => this.getRuntimeAction(context, context.req.param("actionId")));
     app.post("/v1/actions/:actionId", (context) => this.createRuntimeActionRun(context, context.req.param("actionId")));
+    app.route("/v1", createConnectionRoutes(this.options));
     app.get("/v1/apps", (context) => this.listRuntimeApps(context));
     app.get("/v1/apps/authenticated", (context) => this.listAuthenticatedRuntimeApps(context));
     app.get("/v1/apps/services/:service", (context) =>
@@ -145,29 +209,20 @@ export class ConnectServer {
     );
     app.post("/v1/proxy/:service", (context) => this.createRuntimeProxyRequest(context, context.req.param("service")));
 
-    app.get("/openapi.json", (context) =>
-      context.json(
+    app.get("/openapi.json", async (context) => {
+      const { createOpenApiDocument } = await import("./api/openapi.ts");
+      return context.json(
         createOpenApiDocument(this.options.catalog.providers, {
           actionId: optionalString(context.req.query("actionId")),
         }),
-      ),
-    );
-    app.get(
-      "/docs",
-      Scalar({
-        pageTitle: "OOMOL Connect API Reference",
-        url: "/openapi.json",
-        theme: "default",
-        darkMode: false,
-        forceDarkModeState: "light",
-        customCss: `
-          :root {
-            --scalar-color-accent: rgb(59, 99, 251);
-            --scalar-background-accent: rgba(59, 99, 251, 0.12);
-          }
-        `,
-      }),
-    );
+      );
+    });
+    if (this.options.serveDocumentation !== false) {
+      // Path-only so the browser resolves it against whichever host it reached the server through: the public
+      // origin may name a different host (a default localhost origin, a reverse proxy) and /openapi.json sends no CORS.
+      const openapiUrl = `${new URL(this.options.publicOrigin).pathname.replace(/\/+$/, "")}/openapi.json`;
+      app.get("/docs", async (context, next) => (await loadDocsHandler(openapiUrl))(context, next));
+    }
 
     // Schema-free listing. The action detail view loads full schemas on demand
     // from /api/actions/:actionId. The catalog is immutable at runtime, so the
@@ -213,9 +268,11 @@ export class ConnectServer {
     app.post("/mcp", (context) => this.handleMcp(context));
     app.get("/mcp", (context) => this.rejectMcpMethod(context));
     app.delete("/mcp", (context) => this.rejectMcpMethod(context));
-    app.get("/mcp/tools", (context) => context.json({ tools: listMcpToolSummaries() }));
+    app.get("/mcp/tools", async (context) => context.json({ tools: (await loadMcpModule()).listMcpToolSummaries() }));
 
-    this.options.registerStaticRoutes?.(app);
+    // Without a console the API owns every unknown path; a console host layers its fallback over these 404s.
+    if (this.options.registerStaticRoutes) this.options.registerStaticRoutes(app);
+    else app.notFound(notFound);
     app.onError((error, context) => {
       if (error instanceof HttpRequestError) {
         if (context.req.path.startsWith("/v1/")) {
@@ -235,6 +292,13 @@ export class ConnectServer {
         },
         "request failed",
       );
+      if (context.req.path.startsWith("/v1/connections") || context.req.path.startsWith("/v1/connection-requests")) {
+        return writeRuntimeFailure(context, {
+          status: 500,
+          errorCode: "internal_error",
+          message: "Internal server error.",
+        });
+      }
       return internalError(context, error);
     });
 
@@ -248,6 +312,50 @@ export class ConnectServer {
       return context.body(null, 304);
     }
     return context.body(providerSummariesJson, 200, { "Content-Type": "application/json" });
+  }
+
+  private async configureMarketplace(context: Context): Promise<Response> {
+    const body = await readJsonBody(context);
+    const input: MarketplaceConfigInput = {
+      discoveryUrl: optionalString(body.discoveryUrl),
+      apiKey: optionalString(body.apiKey),
+      enabled: typeof body.enabled === "boolean" ? body.enabled : undefined,
+    };
+    try {
+      return context.json(await this.options.marketplace!.configure(input));
+    } catch (error) {
+      if (error instanceof MarketplaceError) {
+        return jsonError(context, error.status === 404 ? 404 : 400, error.code, error.message);
+      }
+      throw error;
+    }
+  }
+
+  private async deleteMarketplace(context: Context): Promise<Response> {
+    await this.options.marketplace!.remove();
+    return context.json(this.options.marketplace!.getState());
+  }
+
+  private async updateProviderPreference(context: Context, service: string): Promise<Response> {
+    const body = await readJsonBody(context);
+    if (typeof body.enabled !== "boolean") {
+      return jsonError(context, 400, "invalid_input", "enabled must be a boolean.");
+    }
+    try {
+      return context.json(await this.options.marketplace!.setProviderEnabled(service, body.enabled));
+    } catch (error) {
+      if (error instanceof MarketplaceError) return jsonError(context, 404, error.code, error.message);
+      throw error;
+    }
+  }
+
+  private async getRuntimeProviderSetup(context: Context, service: string): Promise<Response> {
+    const provider = this.options.catalog.providers.find((provider) => provider.service === service);
+    if (!provider) return writeRuntimeFailure(context, unknownServiceFailure(service));
+    const oauth = provider.auth.some((auth) => auth.type === "oauth2")
+      ? await this.options.oauthClientConfigs.getSummary(service)
+      : undefined;
+    return writeRuntimeSuccess(context, serializeRuntimeProviderSetup(provider, oauth));
   }
 
   private getProvider(context: Context, service: string): Response {
@@ -279,12 +387,7 @@ export class ConnectServer {
 
   private async getTransitFile(context: Context, fileId: string): Promise<Response> {
     try {
-      if (this.options.transitFiles.response) {
-        return await this.options.transitFiles.response(fileId);
-      }
-
-      const file = await this.options.transitFiles.read(fileId);
-      return createTransitFileResponse(file);
+      return await this.options.transitFiles.response(fileId);
     } catch (error) {
       return this.handleTransitFileError(context, error);
     }
@@ -356,8 +459,8 @@ export class ConnectServer {
       const policy = (await this.getPolicySnapshot(context)).evaluate(action);
       return context.text(
         renderActionMarkdown(action, {
+          transport: { kind: "http", origin: this.options.publicOrigin },
           connection: await this.options.connections.getConnectionSummary(action.service, readConnectionName(context)),
-          providerPermissions: action.providerPermissions,
           policy,
         }),
         200,
@@ -390,7 +493,13 @@ export class ConnectServer {
         return true;
       }
 
-      return [provider.service, provider.displayName, provider.categories.join(" "), provider.authTypes.join(" ")]
+      return [
+        provider.service,
+        provider.displayName,
+        provider.categories.join(" "),
+        provider.scenario,
+        provider.authTypes.join(" "),
+      ]
         .join(" ")
         .toLowerCase()
         .includes(query);
@@ -428,7 +537,7 @@ export class ConnectServer {
     return writeRuntimeSuccess(context, await this.serializeSearchResults(results));
   }
 
-  private async serializeSearchResults(results: ActionSearchResult[]): Promise<RuntimeActionSearchResult[]> {
+  private async serializeSearchResults(results: ActionSearchDocument[]): Promise<RuntimeActionSearchResult[]> {
     const authenticated = new Set(
       await this.options.connections.listAuthenticatedServices([...new Set(results.map((result) => result.service))]),
     );
@@ -641,6 +750,7 @@ export class ConnectServer {
       input: body,
       connectionName: readConnectionName(context, body),
       policy,
+      signal: context.req.raw.signal,
     });
     if (result.ok) {
       return writeRuntimeSuccess(context, result.response);
@@ -740,26 +850,16 @@ export class ConnectServer {
   }
 
   private async handleMcp(context: Context): Promise<Response> {
-    const handler = createMcpHandler(
-      () =>
-        createMcpServer({
-          catalog: this.options.catalog,
-          providerLoader: this.options.providerLoader,
-          connections: this.options.connections,
-          actions: this.options.actions,
-          actionPolicy: this.actionPolicy,
-          actionSearch: this.actionSearch,
-          getPolicySnapshot: () => this.getPolicySnapshot(context),
-          runtimeGrant: readRuntimeGrant(context),
-          signal: context.req.raw.signal,
-        }),
-      { legacy: "stateless", responseMode: "json" },
-    );
-    try {
-      return await handler.fetch(context.req.raw);
-    } finally {
-      await handler.close();
-    }
+    const { handleMcpRequest } = await loadMcpModule();
+    return await handleMcpRequest(context.req.raw, {
+      catalog: this.options.catalog,
+      connections: this.options.connections,
+      actions: this.options.actions,
+      actionSearch: this.actionSearch,
+      getPolicySnapshot: () => this.getPolicySnapshot(context),
+      runtimeGrant: readRuntimeGrant(context),
+      signal: context.req.raw.signal,
+    });
   }
 
   private rejectMcpMethod(context: Context): Response {
@@ -848,7 +948,7 @@ export class ConnectServer {
   }
 
   private async disconnect(context: Context, service: string): Promise<Response> {
-    const body = context.req.header("content-type")?.includes("application/json") ? await readJsonBody(context) : {};
+    const body = await readJsonBody(context);
     const connectionName = readConnectionName(context, body);
     const logContext: ConnectionLogContext = {
       operation: "disconnect",
@@ -885,6 +985,7 @@ export class ConnectServer {
         service,
         connectionName,
         clientConfig: readOAuthClientConfigInput(body),
+        authorizationOptionIds: readOptionalStringArray(body, "authorizationOptionIds"),
       });
       const authorizationUrl = new URL(authorization.authorizationUrl);
       this.options.logger?.info(
@@ -981,7 +1082,7 @@ export class ConnectServer {
         service,
         clientId: optionalString(body.clientId) ?? "",
         clientSecret: optionalString(body.clientSecret) ?? "",
-        requestedScopes: readRequestedScopes(body),
+        requestedScopes: readOptionalStringArray(body, "requestedScopes"),
         extra: optionalRecord(body.extra),
         secretExtra: optionalRecord(body.secretExtra),
       }),
@@ -1003,6 +1104,10 @@ export class ConnectServer {
     this.options.logger?.info(logContext, "oauth callback received");
     const providerError = context.req.query("error");
     if (providerError) {
+      const returnUri = state
+        ? await this.options.oauthFlow.rejectAuthorization(state, providerError === "access_denied")
+        : undefined;
+      if (returnUri) return context.redirect(returnUri);
       const providerErrorDescription = context.req.query("error_description");
       this.options.logger?.warn(
         {
@@ -1021,6 +1126,7 @@ export class ConnectServer {
       );
     }
     if (!state || !code) {
+      if (state) await this.options.oauthFlow.rejectAuthorization(state, false);
       this.options.logger?.warn(
         {
           ...logContext,
@@ -1033,13 +1139,14 @@ export class ConnectServer {
 
     let service: string;
     try {
-      service = (
-        await this.options.oauthFlow.completeAuthorization({
-          state,
-          code,
-          signal: context.req.raw.signal,
-        })
-      ).service;
+      const completed = await this.options.oauthFlow.completeAuthorization({
+        state,
+        code,
+        callbackParameters: Object.fromEntries(new URL(context.req.url).searchParams),
+        signal: context.req.raw.signal,
+      });
+      service = completed.service;
+      if (completed.returnUri) return context.redirect(completed.returnUri);
       this.options.logger?.info(
         {
           ...logContext,
@@ -1048,6 +1155,7 @@ export class ConnectServer {
         "oauth callback completed",
       );
     } catch (error) {
+      if (error instanceof OAuthCallbackError && error.returnUri) return context.redirect(error.returnUri);
       if (error instanceof OAuthFlowError || error instanceof ConnectionError) {
         const cancelled = error instanceof ConnectionError && error.code === "connection_cancelled";
         this.options.logger?.[cancelled ? "info" : "warn"](
@@ -1157,24 +1265,22 @@ function readOAuthClientConfigInput(body: Record<string, unknown>): OAuthClientC
   return {
     clientId: optionalString(body.clientId) ?? "",
     clientSecret: optionalString(body.clientSecret) ?? "",
-    requestedScopes: readRequestedScopes(body),
+    requestedScopes: readOptionalStringArray(body, "requestedScopes"),
     extra: optionalRecord(body.extra),
     secretExtra: optionalRecord(body.secretExtra),
   };
 }
 
-function readRequestedScopes(body: Record<string, unknown>): string[] | undefined {
-  if (!("requestedScopes" in body)) {
-    return undefined;
-  }
+function readOptionalStringArray(body: Record<string, unknown>, fieldName: string): string[] | undefined {
+  if (!(fieldName in body)) return undefined;
   return requiredStringArray(
-    body.requestedScopes,
-    "requestedScopes",
+    body[fieldName],
+    fieldName,
     (message) => new HttpRequestError("invalid_input", `${message}.`),
   );
 }
 
-interface ConnectionLogContext {
+interface ConnectionLogContext extends Record<string, unknown> {
   operation: "connect" | "disconnect";
   path: string;
   service: string;
@@ -1206,7 +1312,6 @@ function readConnectionName(context: Context, body?: Record<string, unknown>): s
   return (
     optionalString(body?.connectionName) ??
     optionalString(body?.alias) ??
-    optionalString(context.req.header("x-oomol-connector-alias")) ??
     optionalString(context.req.header("x-oo-connector-alias")) ??
     optionalString(context.req.query("connectionName")) ??
     optionalString(context.req.query("alias"))
@@ -1240,13 +1345,14 @@ interface RuntimeActionSearchResult {
   service: string;
   name: string;
   description: string;
+  operationType: RuntimeActionDefinition["operationType"];
   authenticated: boolean;
   inputSchema: RuntimeActionDefinition["inputSchema"];
   outputSchema: RuntimeActionDefinition["outputSchema"];
 }
 
 function serializeActionSearchResult(
-  result: ActionSearchResult,
+  result: ActionSearchDocument,
   action: RuntimeActionDefinition,
   authenticated: boolean,
 ): RuntimeActionSearchResult {
@@ -1255,6 +1361,7 @@ function serializeActionSearchResult(
     service: result.service,
     name: result.name,
     description: result.description,
+    operationType: action.operationType,
     authenticated,
     inputSchema: action.inputSchema,
     outputSchema: action.outputSchema,

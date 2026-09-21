@@ -1,5 +1,6 @@
 import type { IConnectionStore, StoredConnection } from "./connection-service.ts";
 import type { ActionExecutor, CredentialValidators, ProviderDefinition, ResolvedCredential } from "./core/types.ts";
+import type { MarketplaceService } from "./marketplace/marketplace-service.ts";
 import type { OAuthClientConfig } from "./oauth/oauth-client-config-service.ts";
 import type { IProviderLoader } from "./providers/provider-loader.ts";
 
@@ -80,6 +81,7 @@ const catalogOnlyProvider: ProviderDefinition = {
       service: "catalog_only",
       name: "query",
       description: "Query the catalog-only provider.",
+      operationType: "read",
       requiredScopes: [],
       providerPermissions: [],
       inputSchema: {},
@@ -169,6 +171,81 @@ describe("ConnectionService", () => {
         },
       },
     ]);
+  });
+
+  // The listing puts the Marketplace entry after whatever already answers for the provider, and
+  // only that first entry is the default one.
+  it("orders Marketplace entries after stored and no_auth connections", async () => {
+    const services = ["uptimerobot", "hackernews", "database"];
+    const marketplace = {
+      getSnapshot: () => ({
+        definition: { id: "community", name: "Community", pricing: { model: "included" } },
+        actionsByService: new Map(services.map((service) => [service, new Set([`${service}.example`])])),
+      }),
+      listProviderPreferences: async () =>
+        services.map((service) => ({
+          service,
+          enabled: true,
+          createdAt: "2026-08-27T00:00:00.000Z",
+          updatedAt: "2026-08-27T00:00:00.000Z",
+        })),
+    } as unknown as MarketplaceService;
+    const service = new ConnectionService({
+      catalog: createCatalogStore([apiKeyProvider, hackernewsProvider, customCredentialProvider]),
+      marketplace,
+      providerLoader: new FakeProviderLoader(),
+      store: new MemoryConnectionStore(),
+    });
+    await service.connectWithApiKey("uptimerobot", {
+      values: {
+        apiKey: "test-key",
+        accountId: "account-1",
+      },
+    });
+
+    const summaries = await service.listConnections();
+    expect(summaries.map((summary) => [summary.service, summary.authType, summary.default])).toEqual([
+      ["database", "marketplace", true],
+      ["hackernews", "no_auth", true],
+      ["hackernews", "marketplace", false],
+      ["uptimerobot", "api_key", true],
+      ["uptimerobot", "marketplace", false],
+    ]);
+    await expect(service.listConnectionsByService("uptimerobot")).resolves.toEqual(
+      summaries.filter((summary) => summary.service === "uptimerobot"),
+    );
+  });
+
+  it("derives an explicit Marketplace connection name from discovery metadata", async () => {
+    const marketplace = {
+      getSnapshot: () => ({
+        definition: { id: "community" },
+        actionsByService: new Map([["uptimerobot", new Set(["uptimerobot.status"])]]),
+      }),
+      listProviderPreferences: async () => [
+        {
+          service: "uptimerobot",
+          enabled: true,
+          createdAt: "2026-08-27T00:00:00.000Z",
+          updatedAt: "2026-08-27T00:00:00.000Z",
+        },
+      ],
+    } as unknown as MarketplaceService;
+    const service = new ConnectionService({
+      catalog: createCatalogStore([apiKeyProvider]),
+      marketplace,
+      providerLoader: new FakeProviderLoader(),
+      store: new MemoryConnectionStore(),
+    });
+
+    await expect(service.getConnectionSummary("uptimerobot", "marketplace_community")).resolves.toMatchObject({
+      id: "marketplace:community:uptimerobot",
+      connectionName: "marketplace_community",
+      authType: "marketplace",
+    });
+    await expect(service.getConnectionSummary("uptimerobot", "marketplace_oomol")).rejects.toMatchObject({
+      code: "connection_not_found",
+    });
   });
 
   it("stores API key credentials as resolved credentials", async () => {
@@ -491,7 +568,7 @@ describe("ConnectionService", () => {
     ]);
   });
 
-  it("stores OAuth credentials when profile validation fails", async () => {
+  it("does not store OAuth credentials when profile validation fails", async () => {
     const service = createService([oauthProvider], {
       providerLoader: new FakeProviderLoader({
         async oauth2() {
@@ -508,16 +585,105 @@ describe("ConnectionService", () => {
         profile: testProfile,
         metadata: {},
       }),
-    ).resolves.toMatchObject({
+    ).rejects.toMatchObject({
+      code: "credential_verification_failed",
+      message: "gmail request failed with 403",
+    });
+    await expect(service.getCredential("example")).resolves.toBeUndefined();
+    await expect(service.listConnections()).resolves.toEqual([]);
+  });
+
+  // Credential metadata also holds client secrets and provider-private data.
+  // The summary is a public shape, so this asserts the WHOLE object rather
+  // than the one new key: a test that only checks `oauthAuthorizationId` is
+  // present would pass just as happily if a client secret leaked beside it.
+  it("exposes only the OAuth provenance out of internal credential metadata", async () => {
+    const service = createService([oauthProvider]);
+    const summary = await service.setOAuthCredential(
+      "example",
+      {
+        authType: "oauth2",
+        accessToken: "test-access-token",
+        refreshToken: "test-refresh-token",
+        tokenType: "Bearer",
+        profile: testProfile,
+        metadata: {
+          oauthAuthorizationId: "completed-authorization",
+          oauthClientConfig: { clientId: "test-client", clientSecret: "test-client-secret" },
+          oauthClientSecretExtra: { appBearerToken: "test-app-token" },
+          providerData: "internal-only",
+        },
+      },
+      "work",
+    );
+    const expected = {
+      id: summary.id,
       service: "example",
+      connectionName: "work",
       authType: "oauth2",
       configured: true,
+      virtual: false,
+      default: false,
       profile: testProfile,
+      oauthAuthorizationId: "completed-authorization",
+    };
+
+    // Every way a caller can reach a summary, because they are separate code
+    // paths and a field added to one is not added to the others.
+    expect(JSON.parse(JSON.stringify(summary))).toEqual(expected);
+    expect(await service.getConnectionSummary("example", "work")).toEqual(expected);
+    expect(await service.listConnections()).toEqual([expected]);
+    expect(await service.listConnectionsByService("example")).toEqual([expected]);
+    expect((await service.resolveForExecution("example", "work")).summary).toEqual(expected);
+  });
+
+  // Absent, not null or empty: a connection made before this existed has no
+  // provenance, and "" would read as one. The validator case is the same
+  // assertion from the other side — provenance is minted by the callback that
+  // completed consent, so a provider validator must not be able to supply it.
+  it.each([undefined, null, 42, { nested: "not-a-string" }])(
+    "omits legacy or non-string provenance, and refuses validator-supplied provenance (%#)",
+    async (oauthAuthorizationId) => {
+      const service = createService([oauthProvider], {
+        providerLoader: new FakeProviderLoader({
+          async oauth2() {
+            return { profile: testProfile, metadata: { oauthAuthorizationId: "validator-supplied-id" } };
+          },
+        }),
+      });
+      const summary = await service.setOAuthCredential("example", {
+        authType: "oauth2",
+        accessToken: "access-token",
+        tokenType: "Bearer",
+        profile: testProfile,
+        metadata: { oauthAuthorizationId },
+      });
+
+      expect(summary).not.toHaveProperty("oauthAuthorizationId");
+      expect(await service.getConnectionSummary("example")).not.toHaveProperty("oauthAuthorizationId");
+    },
+  );
+
+  it("preserves the existing OAuth connection when reconnect validation fails", async () => {
+    const validate = vi.fn().mockResolvedValue({ profile: testProfile });
+    const service = createService([oauthProvider], {
+      providerLoader: new FakeProviderLoader({ oauth2: validate }),
     });
-    await expect(service.getCredential("example")).resolves.toMatchObject({
+    const credential: ResolvedCredential = {
       authType: "oauth2",
-      accessToken: "access-token",
-    });
+      accessToken: "original-token",
+      tokenType: "Bearer",
+      profile: testProfile,
+      metadata: {},
+    };
+    const original = await service.setOAuthCredential("example", credential, "work");
+    validate.mockRejectedValue(new Error("profile unavailable"));
+
+    await expect(
+      service.setOAuthCredential("example", { ...credential, accessToken: "replacement-token" }, "work"),
+    ).rejects.toMatchObject({ code: "credential_verification_failed" });
+    await expect(service.getCredential("example", "work")).resolves.toEqual(credential);
+    await expect(service.listConnections()).resolves.toEqual([original]);
   });
 
   it("does not store OAuth credentials when validation is cancelled", async () => {
@@ -897,6 +1063,55 @@ describe("ConnectionService", () => {
       apiKey: "original-key",
       profile: { accountId: "example-account" },
     });
+  });
+
+  it("resolves each service credential once per forConnection scope", async () => {
+    const store = new MemoryConnectionStore();
+    const service = createService([apiKeyProvider, customCredentialProvider], { store });
+    await store.set("uptimerobot", "default", {
+      authType: "api_key",
+      apiKey: "monitor-key",
+      values: { apiKey: "monitor-key", accountId: "account-1" },
+      profile: testProfile,
+      metadata: {},
+    });
+    await store.set("database", "default", {
+      authType: "custom_credential",
+      values: { host: "db.example.com", password: "secret" },
+      profile: testProfile,
+      metadata: {},
+    });
+    const get = vi.spyOn(store, "get");
+
+    const connection = service.forConnection();
+    await expect(connection.getCredential("uptimerobot")).resolves.toMatchObject({ apiKey: "monitor-key" });
+    await expect(connection.getCredential("uptimerobot")).resolves.toMatchObject({ apiKey: "monitor-key" });
+    expect(get).toHaveBeenCalledTimes(1);
+
+    await expect(connection.getCredential("database")).resolves.toMatchObject({
+      values: { host: "db.example.com" },
+    });
+    expect(get).toHaveBeenCalledTimes(2);
+
+    // A fresh scope is a fresh request: it must read the store again rather than serve a stale credential.
+    await expect(service.forConnection().getCredential("uptimerobot")).resolves.toMatchObject({
+      apiKey: "monitor-key",
+    });
+    expect(get).toHaveBeenCalledTimes(3);
+  });
+
+  it("replays a failed credential resolution without reading the store again", async () => {
+    const store = new MemoryConnectionStore();
+    const service = createService([apiKeyProvider], { store });
+    const get = vi.spyOn(store, "get");
+
+    const connection = service.forConnection("missing");
+    const first = await connection.getCredential("uptimerobot").catch((error: unknown) => error);
+    const second = await connection.getCredential("uptimerobot").catch((error: unknown) => error);
+
+    expect(first).toMatchObject({ code: "connection_not_found" });
+    expect(second).toBe(first);
+    expect(get).toHaveBeenCalledTimes(1);
   });
 });
 

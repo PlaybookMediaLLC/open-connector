@@ -6,10 +6,17 @@ import { defineProviderAction } from "../../core/provider-definition.ts";
 const service = "mqtt";
 const qosSchema = s.integer("MQTT quality of service level.", { minimum: 0, maximum: 2 });
 const protocolVersionSchema = s.stringEnum("MQTT protocol version used for the connection.", ["3.1.1", "5.0"]);
+const aliyunRuntimeDeviceCredentialSchemas = {
+  aliyunDeviceAccessKeyId: s.nonEmptyString(
+    "Alibaba Cloud device AccessKey ID. Provide it together with aliyunDeviceAccessKeySecret when the connection is configured for runtime device credentials.",
+  ),
+  aliyunDeviceAccessKeySecret: s.nonEmptyString("Alibaba Cloud device AccessKey secret used to sign the Client ID."),
+};
 
 export const mqttActions: ActionDefinition[] = [
   defineProviderAction(service, {
     name: "publish_message",
+    operationType: "write",
     description: "Publish one UTF-8 or base64-encoded message through a short-lived MQTT-over-WebSocket connection.",
     inputSchema: s.object(
       "The message to publish to the connected MQTT broker.",
@@ -19,8 +26,11 @@ export const mqttActions: ActionDefinition[] = [
         payloadEncoding: s.stringEnum("How to decode payload before publishing it.", ["utf8", "base64"]),
         qos: qosSchema,
         retain: s.boolean("Whether the broker should retain this message for future subscribers."),
+        ...aliyunRuntimeDeviceCredentialSchemas,
       },
-      { optional: ["payloadEncoding", "qos", "retain"] },
+      {
+        optional: ["payloadEncoding", "qos", "retain", "aliyunDeviceAccessKeyId", "aliyunDeviceAccessKeySecret"],
+      },
     ),
     outputSchema: s.object("The completed MQTT publish operation.", {
       topic: s.string("Topic the message was published to."),
@@ -34,6 +44,7 @@ export const mqttActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "receive_messages",
+    operationType: "read",
     description:
       "Wait briefly for new messages on an MQTT topic filter. This is not a persistent subscription and can miss messages between action calls.",
     inputSchema: s.object(
@@ -44,8 +55,18 @@ export const mqttActions: ActionDefinition[] = [
         timeoutSeconds: s.integer("Maximum time to wait for messages before returning.", { minimum: 1, maximum: 30 }),
         maxMessages: s.integer("Maximum number of messages to collect before returning.", { minimum: 1, maximum: 100 }),
         payloadEncoding: s.stringEnum("How received message payloads should be returned.", ["utf8", "base64"]),
+        ...aliyunRuntimeDeviceCredentialSchemas,
       },
-      { optional: ["qos", "timeoutSeconds", "maxMessages", "payloadEncoding"] },
+      {
+        optional: [
+          "qos",
+          "timeoutSeconds",
+          "maxMessages",
+          "payloadEncoding",
+          "aliyunDeviceAccessKeyId",
+          "aliyunDeviceAccessKeySecret",
+        ],
+      },
     ),
     outputSchema: s.object("Messages observed during the bounded subscription window.", {
       messages: s.array(

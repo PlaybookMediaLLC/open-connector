@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { providerUserAgent } from "../providers/provider-runtime.ts";
 import { requestAuthorizationCodeToken, requestRefreshToken } from "./oauth-token.ts";
 
 const authorizationCodeRequest = {
@@ -52,9 +53,37 @@ describe("OAuth token requests", () => {
 
     expect(fetcher).toHaveBeenCalledOnce();
     const init = fetcher.mock.calls[0]?.[1];
-    expect(init).toMatchObject({ method: "POST", redirect: "manual" });
+    expect(init).toMatchObject({
+      method: "POST",
+      redirect: "manual",
+      headers: { "user-agent": providerUserAgent },
+    });
     expect(String(init?.body)).toContain("client_secret=client-secret");
     expect(String(init?.body)).toContain("code=authorization-code");
+  });
+
+  it("cancels a standard authorization-code token request with its caller", async () => {
+    const controller = new AbortController();
+    const fetcher = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) =>
+        await new Promise<Response>((_resolve, reject) => {
+          if (init?.signal?.aborted) {
+            reject(init.signal.reason);
+            return;
+          }
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+        }),
+    );
+    vi.stubGlobal("fetch", fetcher);
+
+    const operation = requestAuthorizationCodeToken({
+      ...authorizationCodeRequest,
+      signal: controller.signal,
+    });
+    controller.abort();
+
+    await expect(operation).rejects.toThrow("OAuth token request was cancelled.");
+    expect(fetcher).toHaveBeenCalledOnce();
   });
 
   it("keeps client_secret_basic credentials out of authorization-code and refresh bodies", async () => {

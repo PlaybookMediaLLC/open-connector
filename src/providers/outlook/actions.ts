@@ -15,6 +15,7 @@ const service = "outlook";
 
 interface OutlookActionSource {
   name: string;
+  operationType: ActionDefinition["operationType"];
   description: string;
   requiredScopes: string[];
   providerPermissions: string[];
@@ -140,6 +141,7 @@ const listFoldersOutput = s.object(
 const actions: OutlookActionSource[] = [
   action(
     "get_profile",
+    "read",
     "Get the current Outlook account profile from Microsoft Graph so you can identify the connected mailbox.",
     outlookReadScopes,
     [outlookProviderScopes.userRead],
@@ -148,6 +150,7 @@ const actions: OutlookActionSource[] = [
   ),
   action(
     "list_mail_folders",
+    "read",
     "List the root-level Outlook mail folders for the connected mailbox, with optional hidden folders and field selection.",
     outlookReadScopes,
     [outlookProviderScopes.mailReadWrite],
@@ -161,14 +164,21 @@ const actions: OutlookActionSource[] = [
   ),
   action(
     "list_messages",
+    "read",
     "List Outlook messages from the mailbox or from a specific mail folder, with support for OData filters, sorting, field selection, and pagination.",
     outlookReadScopes,
     [outlookProviderScopes.mailReadWrite],
     input({
       mailFolderId,
       top: s.integer({ minimum: 1, maximum: 1000, description: "Maximum number of messages to return." }),
-      filter: s.string({ description: "OData filter expression for the messages query." }),
-      orderby: s.string({ description: "OData orderby expression for the messages query." }),
+      filter: s.string({
+        description:
+          "OData filter expression for the messages query. When combined with orderby, include every orderby property first, in the same order. Example: receivedDateTime ge 2026-01-01T00:00:00Z and isRead eq false.",
+      }),
+      orderby: s.string({
+        description:
+          "OData orderby expression for the messages query. When combined with filter, every ordered property must appear first in the filter and in the same order. Example: receivedDateTime desc.",
+      }),
       select: stringArray("Message fields to request from Microsoft Graph."),
       nextLink,
       bodyContentType,
@@ -177,6 +187,7 @@ const actions: OutlookActionSource[] = [
   ),
   action(
     "get_message",
+    "read",
     "Get a single Outlook message by message ID, including message metadata and optional body formatting.",
     outlookReadScopes,
     [outlookProviderScopes.mailReadWrite],
@@ -187,6 +198,7 @@ const actions: OutlookActionSource[] = [
   ),
   action(
     "create_draft",
+    "write",
     "Create a new Outlook draft message with subject, body, recipients, and other writable message properties.",
     outlookWriteScopes,
     [outlookProviderScopes.mailReadWrite],
@@ -195,6 +207,7 @@ const actions: OutlookActionSource[] = [
   ),
   action(
     "update_draft",
+    "write",
     "Update an existing Outlook draft message before sending.",
     outlookWriteScopes,
     [outlookProviderScopes.mailReadWrite],
@@ -203,6 +216,7 @@ const actions: OutlookActionSource[] = [
   ),
   action(
     "send_draft",
+    "write",
     "Send an existing Outlook draft message by message ID.",
     outlookSendScopes,
     [outlookProviderScopes.mailSend],
@@ -211,6 +225,7 @@ const actions: OutlookActionSource[] = [
   ),
   action(
     "send_email",
+    "write",
     "Send a new Outlook email in a single operation, without creating a standalone draft first.",
     outlookSendScopes,
     [outlookProviderScopes.mailSend],
@@ -225,6 +240,7 @@ const actions: OutlookActionSource[] = [
   ),
   action(
     "reply_email",
+    "write",
     "Reply to an existing Outlook message with either a comment or a replacement body, and optionally add more recipients to the reply.",
     outlookSendScopes,
     [outlookProviderScopes.mailSend],
@@ -244,6 +260,7 @@ const actions: OutlookActionSource[] = [
   ),
   action(
     "get_mailbox_settings",
+    "read",
     "Get the current Outlook mailbox settings, including automatic replies, locale, time zone, and working hours.",
     outlookSettingsReadScopes,
     [outlookProviderScopes.mailboxSettingsReadWrite],
@@ -252,6 +269,7 @@ const actions: OutlookActionSource[] = [
   ),
   action(
     "update_mailbox_settings",
+    "write",
     "Update Outlook mailbox settings such as automatic replies, locale, time zone, working hours, and date or time formatting.",
     outlookSettingsWriteScopes,
     [outlookProviderScopes.mailboxSettingsReadWrite],
@@ -275,11 +293,12 @@ export const outlookActions: ActionDefinition[] = actions.map((item) => definePr
 
 function action(
   name: string,
+  operationType: ActionDefinition["operationType"],
   description: string,
   requiredScopes: string[],
   providerPermissions: string[],
   inputSchema: JsonSchema,
   outputSchema: JsonSchema,
 ): OutlookActionSource {
-  return { name, description, requiredScopes, providerPermissions, inputSchema, outputSchema };
+  return { name, operationType, description, requiredScopes, providerPermissions, inputSchema, outputSchema };
 }

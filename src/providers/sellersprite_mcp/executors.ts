@@ -1,4 +1,4 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 import type { Client } from "@modelcontextprotocol/client";
@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { withMcpClient } from "../mcp-client.ts";
 import {
   defineApiKeyProviderExecutors,
+  defineProviderProxy,
   mapProviderActionHandlers,
   providerUserAgent,
   ProviderRequestError,
@@ -52,6 +53,22 @@ export const credentialValidators: CredentialValidators = {
     };
   },
 };
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: "https://mcp.sellersprite.com",
+  auth: { type: "api_key_header", name: "secret-key" },
+  skipDnsValidation: true,
+  timeoutMs,
+  redirect: "error",
+  customizeRequest({ url, headers }) {
+    if (url.toString() !== endpoint) {
+      throw new ProviderRequestError(400, "SellerSprite MCP proxy only supports the official /mcp endpoint");
+    }
+    if (!headers.has("accept")) headers.set("accept", "application/json, text/event-stream");
+    if (!headers.has("content-type")) headers.set("content-type", "application/json");
+  },
+});
 async function discover(context: Context): Promise<unknown[]> {
   return withClient(context, async (client) => {
     const result = await client.listTools({}, { timeout: timeoutMs });
@@ -96,7 +113,9 @@ function normalize(result: ToolResult): unknown {
       )
     )
       throw new ProviderRequestError(401, message, envelope);
-    if (envelope.code === "ERROR_VISIT_MAX") throw new ProviderRequestError(429, message, envelope);
+    if (envelope.code === "ERROR_VISIT_MAX" || envelope.code === "ERROR_MAXIMUM_ACCESS_PER_MINUTE") {
+      throw new ProviderRequestError(429, message, envelope);
+    }
     if (envelope.code === "ERROR_AUTH_ERROR") throw new ProviderRequestError(403, message, envelope);
     if (envelope.code === "ERROR_PARAM") throw new ProviderRequestError(400, message, envelope);
     throw new ProviderRequestError(502, message, envelope);
@@ -105,7 +124,9 @@ function normalize(result: ToolResult): unknown {
   if (result.structuredContent) return result.structuredContent;
   return result;
 }
-function errorEnvelope(result: ToolResult): { code: string; message?: string } | undefined {
+function errorEnvelope(
+  result: ToolResult,
+): { code: string; message?: string; providerResponse: Record<string, unknown> } | undefined {
   const candidates: unknown[] = [];
   if ("structuredContent" in result) candidates.push(result.structuredContent);
   const content = "content" in result && Array.isArray(result.content) ? result.content : [];
@@ -128,17 +149,21 @@ function errorEnvelope(result: ToolResult): { code: string; message?: string } |
     const record = object(candidate);
     const code = typeof record.code === "string" ? record.code.trim() : "";
     if (code.startsWith("ERROR_"))
-      return { code, message: typeof record.message === "string" ? record.message.trim() : undefined };
+      return {
+        code,
+        message: typeof record.message === "string" ? record.message.trim() : undefined,
+        providerResponse: record,
+      };
   }
   return undefined;
 }
 function mapError(error: unknown): ProviderRequestError {
   if (error instanceof ProviderRequestError) return error;
   if (error instanceof UnauthorizedError)
-    return new ProviderRequestError(401, "SellerSprite MCP Secret Key is invalid, expired, or inactive", error);
+    return new ProviderRequestError(401, "SellerSprite MCP request was unauthorized", error);
   if (error instanceof SdkHttpError)
     return new ProviderRequestError(
-      error.status === 401 || error.status === 403 ? 401 : error.status === 429 ? 429 : 502,
+      error.status === 401 || error.status === 403 || error.status === 429 ? error.status : 502,
       `SellerSprite MCP request failed: ${error.message}`,
       error,
     );

@@ -4,6 +4,7 @@ import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } fro
 import { optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
 import { assertPublicHttpUrl } from "../../core/request.ts";
 import {
+  providerInputError,
   providerUserAgent,
   ProviderRequestError,
   readProviderJsonBody,
@@ -41,8 +42,8 @@ export const postizActionHandlers: Record<string, PostizActionHandler> = {
       context,
       path: "posts",
       query: {
-        startDate: requiredString(input.startDate, "startDate", inputError),
-        endDate: requiredString(input.endDate, "endDate", inputError),
+        startDate: requiredString(input.startDate, "startDate", providerInputError),
+        endDate: requiredString(input.endDate, "endDate", providerInputError),
         customer: optionalString(input.customer),
       },
     });
@@ -59,16 +60,16 @@ export const postizActionHandlers: Record<string, PostizActionHandler> = {
       context,
       path: `posts/${id(input.id, "id")}/status`,
       method: "PUT",
-      body: { status: requiredString(input.status, "status", inputError) },
+      body: { status: requiredString(input.status, "status", providerInputError) },
     });
   },
   upload_file(input, context) {
     return uploadFile(input, context);
   },
   upload_from_url(input, context) {
-    const url = assertPublicHttpUrl(requiredString(input.url, "url", inputError), {
+    const url = assertPublicHttpUrl(requiredString(input.url, "url", providerInputError), {
       fieldName: "url",
-      createError: inputError,
+      createError: providerInputError,
     });
     return postizRequest({ context, path: "upload-from-url", method: "POST", body: { url: url.toString() } });
   },
@@ -76,14 +77,14 @@ export const postizActionHandlers: Record<string, PostizActionHandler> = {
     return postizRequest({
       context,
       path: `analytics/${id(input.integrationId, "integrationId")}`,
-      query: { date: requiredString(input.days, "days", inputError) },
+      query: { date: requiredString(input.days, "days", providerInputError) },
     });
   },
   get_post_analytics(input, context) {
     return postizRequest({
       context,
       path: `analytics/post/${id(input.postId, "postId")}`,
-      query: { date: requiredString(input.days, "days", inputError) },
+      query: { date: requiredString(input.days, "days", providerInputError) },
     });
   },
 };
@@ -154,9 +155,9 @@ function validatePostMediaUrls(input: Record<string, unknown>): void {
       const images = optionalRecord(value)?.image;
       if (!Array.isArray(images)) continue;
       for (const image of images) {
-        assertPublicHttpUrl(requiredString(optionalRecord(image)?.path, "posts image path", inputError), {
+        assertPublicHttpUrl(requiredString(optionalRecord(image)?.path, "posts image path", providerInputError), {
           fieldName: "posts image path",
-          createError: inputError,
+          createError: providerInputError,
         });
       }
     }
@@ -164,9 +165,5 @@ function validatePostMediaUrls(input: Record<string, unknown>): void {
 }
 
 function id(value: unknown, fieldName: string): string {
-  return encodeURIComponent(requiredString(value, fieldName, inputError));
-}
-
-function inputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
+  return encodeURIComponent(requiredString(value, fieldName, providerInputError));
 }

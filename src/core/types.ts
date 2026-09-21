@@ -14,6 +14,23 @@ export type JsonSchema = {
 export type AuthType = "no_auth" | "api_key" | "custom_credential" | "oauth2";
 
 /**
+ * Broad, task-oriented provider group calculated from catalog source metadata.
+ *
+ * Provider definitions do not need to repeat this field: the catalog builder
+ * adds it to runtime entries through the shared scenario resolver.
+ */
+export type ProviderScenario =
+  | "ai"
+  | "cross-border-ecommerce"
+  | "communication"
+  | "docs"
+  | "productivity"
+  | "marketing"
+  | "data-storage"
+  | "developer"
+  | "other";
+
+/**
  * A single credential field that users can configure for a provider.
  */
 export type CredentialDefinition = {
@@ -85,6 +102,10 @@ export type ApiKeyAuthDefinition = {
 export type CustomCredentialAuthDefinition = {
   /** Auth discriminator used by catalog clients and connection routes. */
   type: "custom_credential";
+  /** Optional display name for this auth mode in consoles, e.g. "Service Account". */
+  label?: string;
+  /** Optional help text describing when to use this auth mode. */
+  description?: string;
   /** Complete user-editable credential field list for this provider. */
   fields: CredentialDefinition[];
   /** Optional action used by future UI/CLI flows to verify credentials. */
@@ -113,6 +134,8 @@ export type OAuth2AuthDefinition = {
   refreshTokenUrl?: string;
   /** OAuth scopes joined with spaces into the authorization URL `scope` parameter. */
   scopes: string[];
+  /** Selectable provider-native OAuth scopes for programmatic connections. */
+  authorizationOptions?: OAuthAuthorizationOption[];
   /** Separator used when joining OAuth scopes. Defaults to a space. */
   scopeSeparator?: " " | ",";
   /** How the runtime sends client credentials to the token endpoint. */
@@ -152,6 +175,8 @@ export type OAuth2AuthDefinition = {
   };
   /** Extra static authorization URL parameters, such as Google `access_type=offline`. */
   authorizationParams?: Record<string, string>;
+  /** Provider callback query parameters forwarded to token exchange and later token refresh. */
+  tokenRequestCallbackParameters?: string[];
   /** Provider-specific OAuth authorization request field names. */
   authorizationRequestFields?: {
     clientId?: string | false;
@@ -166,6 +191,16 @@ export type OAuth2AuthDefinition = {
   clientSetup?: OAuthClientSetupDefinition;
 };
 
+export interface OAuthAuthorizationOption {
+  id: string;
+  label: string;
+  description: string;
+  required: boolean;
+  defaultSelected: boolean;
+  risk: "standard" | "sensitive" | "destructive";
+  requires?: string[];
+}
+
 /**
  * Provider authentication capabilities advertised in the public catalog.
  */
@@ -174,6 +209,9 @@ export type ProviderAuthDefinition =
   | ApiKeyAuthDefinition
   | CustomCredentialAuthDefinition
   | OAuth2AuthDefinition;
+
+/** How an action affects provider state. */
+export type ActionOperationType = "read" | "write" | "destructive";
 
 /**
  * Public metadata and schema contract for one action.
@@ -190,6 +228,8 @@ export type ActionDefinition = {
   name: string;
   /** Human-readable action summary for catalogs, docs, and tool descriptions. */
   description: string;
+  /** Whether the action reads, changes, or destructively changes provider state. */
+  operationType: ActionOperationType;
   /** Provider-native OAuth scopes, permission names, or capability strings needed for this action. */
   requiredScopes: string[];
   /** Provider-native permissions or scopes users must grant. */
@@ -298,13 +338,7 @@ export interface TransitFileRead {
 
 export interface TransitFileStore {
   readonly maxBytes: number;
-  create(file: File): Promise<{
-    fileId: string;
-    downloadUrl: string;
-    sizeBytes: number;
-    name: string;
-    mimeType: string;
-  }>;
+  create(file: File): Promise<TransitFileUpload>;
   read(fileId: string): Promise<TransitFileRead>;
   delete(fileId: string): Promise<boolean>;
 }
@@ -324,6 +358,8 @@ export interface ExecutionContext {
   transitFiles?: TransitFileWriter;
   /** Optional cancellation signal propagated from the HTTP request or runner. */
   signal?: AbortSignal;
+  /** Host logger for provider diagnostics, absent when the host supplies none. */
+  logger?: RuntimeLogger;
 }
 
 /**

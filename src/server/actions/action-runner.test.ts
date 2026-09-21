@@ -9,13 +9,13 @@ import { createCatalogStore } from "../../catalog-store.ts";
 import { ConnectionService } from "../../connection-service.ts";
 import { ActionPolicyService } from "../../core/action-policy.ts";
 import { ActionRunner } from "./action-runner.ts";
-import * as runLogSummary from "./run-log-summary.ts";
 
 const echoAction: ActionDefinition = {
   id: "example.echo",
   service: "example",
   name: "echo",
   description: "Echo input.",
+  operationType: "read",
   requiredScopes: [],
   providerPermissions: [],
   inputSchema: { type: "object" },
@@ -42,6 +42,7 @@ const credential: Extract<ResolvedCredential, { authType: "api_key" }> = {
   profile: { accountId: "example", displayName: "Example", grantedScopes: [] },
   metadata: {},
 };
+const openPolicy = new ActionPolicyService().createSnapshot();
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -57,6 +58,7 @@ describe("ActionRunner", () => {
       actionId: "example.echo",
       input: { message: "hello", token: "secret" },
       caller: "http",
+      policy: openPolicy,
     });
 
     expect(run).toMatchObject({ auditPersisted: true, result: { ok: true } });
@@ -84,7 +86,7 @@ describe("ActionRunner", () => {
     const { entries, logger } = createTestLogger();
     const runner = createRunner({ runs, logger });
 
-    const run = await runner.run({ actionId: "example.echo", input: {}, caller: "mcp" });
+    const run = await runner.run({ actionId: "example.echo", input: {}, caller: "mcp", policy: openPolicy });
 
     expect(run).toMatchObject({
       auditPersisted: false,
@@ -94,14 +96,20 @@ describe("ActionRunner", () => {
   });
 
   it("falls back to an unavailable summary without changing the action result", async () => {
-    vi.spyOn(runLogSummary, "summarizeForRunLog").mockImplementationOnce(() => {
-      throw new Error("secret-in-summary");
-    });
+    // A non-plain prototype is the shape summarizeForRunLog refuses to enumerate.
+    const unsummarizableInput = new (class {
+      readonly message = "secret-in-summary";
+    })() as unknown as Record<string, unknown>;
     const runs = new MemoryRunLogStore();
     const { entries, logger } = createTestLogger();
     const runner = createRunner({ runs, logger });
 
-    const run = await runner.run({ actionId: "example.echo", input: {}, caller: "web" });
+    const run = await runner.run({
+      actionId: "example.echo",
+      input: unsummarizableInput,
+      caller: "web",
+      policy: openPolicy,
+    });
 
     expect(run?.result).toEqual({ ok: true, output: { message: "ok" } });
     expect(runs.items[0]).toMatchObject({ inputSummary: "[unavailable]" });
@@ -119,7 +127,7 @@ describe("ActionRunner", () => {
       }),
     });
 
-    const run = await runner.run({ actionId: "example.echo", input: {}, caller: "http" });
+    const run = await runner.run({ actionId: "example.echo", input: {}, caller: "http", policy: openPolicy });
 
     expect(run?.result).toEqual({
       ok: false,
@@ -157,6 +165,7 @@ describe("ActionRunner", () => {
       actionId: "example.echo",
       input: {},
       caller: "http",
+      policy: openPolicy,
       signal: controller.signal,
     });
     await started;
@@ -187,6 +196,7 @@ describe("ActionRunner", () => {
       actionId: "example.echo",
       input: {},
       caller: "http",
+      policy: openPolicy,
       signal: controller.signal,
     });
 
@@ -218,6 +228,7 @@ describe("ActionRunner", () => {
       actionId: "example.echo",
       input: {},
       caller: "http",
+      policy: openPolicy,
       signal: controller.signal,
     });
     await vi.waitFor(() => expect(getConnectionSummary).toHaveBeenCalledOnce());
@@ -242,7 +253,7 @@ describe("ActionRunner", () => {
       }),
     });
 
-    const run = await runner.run({ actionId: "example.echo", input: {}, caller: "web" });
+    const run = await runner.run({ actionId: "example.echo", input: {}, caller: "web", policy: openPolicy });
 
     expect(run?.result.ok).toBe(true);
   });
@@ -254,7 +265,7 @@ describe("ActionRunner", () => {
     const loadExecutor = vi.spyOn(providerLoader, "loadActionExecutor");
     const resolveConnection = vi.spyOn(ConnectionService.prototype, "resolveForExecution");
     const actionPolicy = new ActionPolicyService({ blockedActions: ["example.echo"] });
-    const runner = createRunner({ runs, logger, providerLoader, actionPolicy });
+    const runner = createRunner({ runs, logger, providerLoader });
 
     const run = await runner.run({
       actionId: "example.echo",
@@ -291,7 +302,7 @@ describe("ActionRunner", () => {
       allowedProxies: [],
       allowedConnections: ["ungranted-connection-id"],
     });
-    const runner = createRunner({ runs, logger: createTestLogger().logger, providerLoader, actionPolicy });
+    const runner = createRunner({ runs, logger: createTestLogger().logger, providerLoader });
 
     const omitted = await runner.run({
       actionId: "example.echo",
@@ -328,7 +339,6 @@ describe("ActionRunner", () => {
     const runner = createRunner({
       runs,
       logger: createTestLogger().logger,
-      actionPolicy,
       provider: authenticatedProvider,
       store,
     });
@@ -381,7 +391,6 @@ function createRunner(options: {
   runs: IRunLogStore;
   logger: Logger;
   providerLoader?: IProviderLoader;
-  actionPolicy?: ActionPolicyService;
   provider?: ProviderDefinition;
   store?: IConnectionStore;
 }): ActionRunner {
@@ -397,7 +406,6 @@ function createRunner(options: {
       store: options.store ?? new MemoryConnectionStore(),
     }),
     runs: options.runs,
-    actionPolicy: options.actionPolicy,
     logger: options.logger,
   });
 }

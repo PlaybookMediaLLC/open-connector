@@ -1,4 +1,3 @@
-import type { ActionPolicyService } from "../core/action-policy.ts";
 import type { RuntimeLogger } from "../core/types.ts";
 import type { ActionRunner, ActionRunResult, RunActionInput } from "../server/actions/action-runner.ts";
 import type { ISecretCodec } from "../server/secrets/secret-codec-core.ts";
@@ -9,10 +8,13 @@ import type { LensDb } from "./db.ts";
 import type { LensPolicy } from "./policy.ts";
 import type { ApprovalRecord, LensPrincipal } from "./stores.ts";
 
+import { ActionPolicyService } from "../core/action-policy.ts";
 import { authorizeLens } from "./authorize.ts";
 import { canonicalJson, sha256Hex } from "./canonical.ts";
 import { composeLensPolicies, policySnapshotId } from "./policy.ts";
 import { ApprovalStore, EvidenceStore, PrincipalStore, ReservationStore, TokenPolicyStore } from "./stores.ts";
+
+const emptyUpstreamPolicy = new ActionPolicyService({}).createSnapshot();
 
 export interface LensRuntimeOptions {
   db: LensDb;
@@ -376,15 +378,21 @@ export class LensRuntime {
     approval: ApprovalRecord,
   ): Promise<{ ok: true; snapshot: RunActionInput["policy"] } | { ok: false; errorCode: string }> {
     const upstream = this.options.upstream;
-    if (!approval.tokenId || !upstream?.tokenStore || !upstream.actionPolicy) {
-      return { ok: true, snapshot: undefined };
+    if (!upstream?.actionPolicy) {
+      return { ok: true, snapshot: emptyUpstreamPolicy };
+    }
+    const runtimeRules = (await upstream.policyStore?.get())?.rules;
+    if (!approval.tokenId) {
+      return { ok: true, snapshot: upstream.actionPolicy.createSnapshot(runtimeRules) };
+    }
+    if (!upstream.tokenStore) {
+      return { ok: false, errorCode: "execution_grant_invalid" };
     }
     // ponytail: token lookup scans list(); switch to a get-by-id store method if token counts grow.
     const record = (await upstream.tokenStore.list()).find((token) => token.id === approval.tokenId);
     if (!record) {
       return { ok: false, errorCode: "execution_grant_invalid" };
     }
-    const runtimeRules = (await upstream.policyStore?.get())?.rules;
     return {
       ok: true,
       snapshot: upstream.actionPolicy.createSnapshot(runtimeRules, {

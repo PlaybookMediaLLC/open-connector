@@ -10,6 +10,19 @@ const submittedMessageOutputSchema = s.object("A submitted Gupshup WhatsApp mess
   messageId: s.nonEmptyString("The unique Gupshup message identifier."),
 });
 
+const templateSchema = s.looseObject("A Gupshup WhatsApp message template with provider-defined metadata.", {
+  id: s.optional(s.nonEmptyString("The Gupshup template ID.")),
+  appId: s.optional(s.nonEmptyString("The Gupshup app ID that owns the template.")),
+  elementName: s.optional(s.string("The template name.")),
+  category: s.optional(s.string("The template category.")),
+  languageCode: s.optional(s.string("The template language code.")),
+  status: s.optional(s.string("The template approval status.")),
+  templateType: s.optional(s.string("The template type.")),
+  quality: s.optional(s.string("The template quality rating.")),
+  createdOn: s.optional(s.integer("The template creation timestamp in milliseconds.")),
+  modifiedOn: s.optional(s.integer("The template modification timestamp in milliseconds.")),
+});
+
 const messageAddressProperties = {
   source: s.nonEmptyString(
     "The registered WhatsApp Business sender number in international format without a plus sign.",
@@ -40,13 +53,14 @@ const listTemplatesInputSchema = s.object(
 export const gupshupActions: ActionDefinition[] = [
   defineProviderAction(service, {
     name: "send_text_message",
+    operationType: "write",
     description: "Send a text message in an active WhatsApp conversation through Gupshup.",
     requiredScopes: [],
     inputSchema: s.object(
       "A Gupshup WhatsApp text message.",
       {
         ...messageAddressProperties,
-        text: s.nonEmptyString("The text content to send to the recipient."),
+        text: s.nonEmptyString("The text content to send to the recipient.", { maxLength: 4096 }),
         disablePreview: s.boolean("Whether to disable link previews in the text message."),
       },
       { optional: ["disablePreview"] },
@@ -55,6 +69,7 @@ export const gupshupActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "send_template_message",
+    operationType: "write",
     description: "Send an approved text template message through Gupshup.",
     requiredScopes: [],
     inputSchema: s.object(
@@ -72,11 +87,13 @@ export const gupshupActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "list_templates",
+    operationType: "read",
     description: "List message templates for the connected Gupshup app.",
     requiredScopes: [],
     inputSchema: listTemplatesInputSchema,
-    outputSchema: s.object("The template-list response returned by Gupshup.", {
-      data: s.unknown("The current Gupshup template-list response payload."),
+    outputSchema: s.looseRequiredObject("The template-list response returned by Gupshup.", {
+      status: s.stringEnum("The template-list request status.", ["success"]),
+      templates: s.array("The templates returned for the connected app.", templateSchema),
     }),
   }),
 ];
