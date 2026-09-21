@@ -1,8 +1,9 @@
 # RFC 0002: Multi-Tenant Isolation and Connection Scoping
 
-- **Status:** Draft
+- **Status:** Accepted — implementation planned
 - **Author:** Lens
 - **Date:** 2026-08-17
+- **Accepted:** 2026-08-22
 - **Priority:** 2 of 3
 - **Depends on:** RFC 0001 — Agent Authorization Control Plane
 
@@ -68,6 +69,26 @@ Tenant-Scoped Execution
 ```
 
 This RFC turns tenancy from a database convention into a runtime security invariant.
+
+---
+
+# Fork-isolation constraint
+
+RFC 0004 governs this implementation.
+
+Multi-tenancy is a Lens-owned overlay. It MUST NOT add tenant columns to upstream
+tables, change upstream store or public API types, or spread tenant checks through
+upstream route handlers. New code and schema live under `src/lens/` and use
+`lens_`-prefixed tables.
+
+The integration budget is:
+
+1. keep the existing `wrapActionRunner` seam for action execution;
+2. add one outer application wrapper seam in the Node and Cloudflare entrypoints;
+3. move existing Lens route registration into that outer wrapper and remove the inner
+   route-registration seams.
+
+This keeps upstream merges limited to short, marked seam lines.
 
 ---
 
@@ -215,7 +236,7 @@ A tenant may represent:
 
 It does not necessarily represent one human.
 
-Multiple principals may eventually operate inside one tenant.
+Multiple principals may operate inside one tenant.
 
 ---
 
@@ -251,7 +272,7 @@ The trusted runtime representation of tenant scope for one request.
 interface TenantContext {
   tenantId: string;
 
-  source: "runtime_jwt" | "runtime_token" | "matched_auth_sources" | "legacy_default";
+  source: "runtime_token" | "tenant_user_jwt" | "legacy_default";
 }
 ```
 
@@ -309,15 +330,16 @@ Tenant identity originates only from trusted authentication state.
 
 ---
 
-## 3. Conflicting tenant authorities fail closed
+## 3. Authentication classes never combine
 
-If two trusted authentication mechanisms assert tenant identity, they must agree.
+The requested route selects one permitted credential class. Lens never combines a
+runtime token with tenant-user or operator JWT authority.
 
-Example:
+Persisted Lens bindings must also agree. For example:
 
 ```text
-JWT tenant       acct_A
-Runtime token    acct_B
+token tenant        acct_A
+principal tenant    acct_B
 ```
 
 Result:
@@ -326,7 +348,7 @@ Result:
 403 tenant_mismatch
 ```
 
-No precedence rule silently chooses one.
+No precedence rule silently chooses one, and no connection lookup occurs.
 
 ---
 
@@ -362,7 +384,8 @@ forbidden_because_it_belongs_to_tenant_B
 
 Tenant boundaries must not become an enumeration oracle.
 
-`tenant_mismatch` is reserved for contradictory trusted authentication sources.
+`tenant_mismatch` is reserved for contradictory trusted Lens bindings and is not used
+to reveal foreign resources.
 
 ---
 
@@ -420,115 +443,117 @@ If a persisted object can reveal customer data or authority, it must be tenant-b
 
 ## 10. Tenant-bound ciphertext cannot be silently moved between tenants
 
-Where supported by the credential encryption implementation, encrypted tenant secrets SHOULD bind tenant identity into authenticated encryption metadata.
+Lens-owned encrypted approval input MUST include and verify tenant, immutable
+connection authority, and approval identity inside its encrypted envelope.
+Authenticated encryption metadata adds defense in depth when the Lens codec supports
+it.
 
 ---
 
-# Tenant resolution
+# Authentication classes
 
-Tenant identity is resolved during authentication.
+Strict mode separates machine execution, tenant-human control, and cross-tenant
+operation. These credential classes are not interchangeable.
 
-Current runtime JWT verification:
+Lens owns their verification under `src/lens/`. It may reuse the installed JWT
+library and exported upstream token services, but it does not change the upstream
+`RuntimeJwtVerifier`, upstream authentication middleware, or upstream token rows.
+
+---
+
+## 1. Bound runtime token
+
+A stored upstream runtime token is the only credential accepted by:
 
 ```text
-src/server/api/runtime-jwt.ts
+/lens/v1/actions/*
+/lens/v1/proxy/*
+/lens/mcp
 ```
 
-is extended from returning a boolean to returning verified claims.
+Lens resolves the bearer through the existing `RuntimeTokenService`, obtains its
+stable upstream token ID, and loads the token's tenant from:
+
+```text
+lens_token_tenants
+```
+
+Strict mode also requires a tenant-matching `lens_principals` row. An unbound,
+revoked, or unmapped token is denied before connection lookup. This keeps every
+strict action and upstream run attributable to one stored token.
+
+Token creation is fail-closed. The Lens operator service creates the upstream token,
+writes its tenant and principal bindings, and returns the plaintext token only after
+both writes succeed. If a Lens write fails, it revokes the upstream token; even if
+revocation also fails, the unbound orphan cannot enter the strict data plane.
 
 ---
 
-# Trusted tenant sources
+## 2. Tenant-user JWT
 
-RFC 0002 initially supports two trusted sources.
+A tenant-user JWT authenticates human control-plane requests such as connection
+management, OAuth start, run inspection, and approval resolution. It is never accepted
+as an action, proxy, or MCP execution credential.
 
-## 1. Runtime JWT
-
-A verified runtime JWT may contain:
+Required claims:
 
 ```json
 {
-  "tenant": "acct_8f2k"
+  "sub": "user_123",
+  "tenant": "acct_8f2k",
+  "scope": "lens.connections.read lens.connections.write",
+  "exp": 1787439600
 }
 ```
 
-The claim is trusted only after:
-
-- signature validation;
-- issuer validation;
-- audience validation;
-- temporal claim validation.
-
-The tenant claim itself is not trusted independently of the JWT.
+Lens trusts these claims only after signature, issuer, audience, and temporal claim
+validation. `sub` and `tenant` are required non-empty strings. `exp` is a required
+NumericDate. `scope` is an ASCII-space-delimited set checked per route.
 
 ---
 
-## 2. Runtime token
+## 3. Operator JWT
 
-`RuntimeTokenRecord` gains:
+Operator routes require a JWT with the operator audience, a non-empty `sub`, a valid
+`exp`, and `lens.operator` scope. An operator JWT does not contain or select a
+data-plane tenant. The verified `sub` is the actor subject in control evidence. A
+tenant-specific operator route takes its target tenant from the route parameter.
 
-```ts
-tenantId?: string;
-```
-
-A tenant-bound runtime token may act only inside that tenant.
+A tenant-user JWT is rejected on operator routes even when it carries a similarly
+named scope. A deployment admin token used by the legacy upstream console is not an
+operator credential in strict mode.
 
 ---
 
-# Tenant resolution algorithm
+## Lens JWT configuration
 
-```ts
-function resolveTenant(jwtTenant?: string, tokenTenant?: string, mode?: TenancyMode): TenantContext;
-```
-
-Rules:
-
-### Both present and equal
+Tenant-user and operator JWTs use Lens-owned configuration:
 
 ```text
-JWT        acct_A
-Token      acct_A
+LENS_JWKS_URI
+LENS_JWT_ISSUER
+LENS_TENANT_JWT_AUDIENCE
+LENS_OPERATOR_JWT_AUDIENCE
 ```
 
-Result:
+The issuer and JWKS may be shared, but the configured audiences MUST differ. After
+normal JWT verification, Lens requires `aud` to be one string equal to the selected
+credential class's configured audience. An audience array, the other Lens audience,
+or both audiences is rejected. One signed token therefore cannot satisfy both Lens JWT
+classes. Both verifiers require `sub` and `exp`; the tenant verifier additionally
+requires `tenant` and `scope`, and the operator verifier requires `scope` containing
+`lens.operator`.
 
-```text
-acct_A
-source = matched_auth_sources
-```
+Lens does not repurpose upstream `OOMOL_CONNECT_*` authentication variables.
 
 ---
 
-### Both present and different
+## One credential class per request
 
-```text
-JWT        acct_A
-Token      acct_B
-```
-
-Result:
-
-```text
-403 tenant_mismatch
-```
-
----
-
-### JWT only
-
-Use JWT tenant.
-
----
-
-### Token only
-
-Use token tenant.
-
----
-
-### Neither present
-
-Behavior depends on tenancy mode.
+The Lens boundary selects one credential class from the route before authenticating.
+It does not merge authority from cookies, headers, request bodies, or two credential
+classes. The exact-audience check above is part of class selection. A credential valid
+for another class returns `401 unauthorized`.
 
 ---
 
@@ -540,7 +565,14 @@ Introduce:
 type TenancyMode = "legacy" | "strict";
 ```
 
-Configured at deployment level.
+Configured by:
+
+```text
+LENS_TENANCY_MODE=legacy | strict
+```
+
+The default is `legacy` for compatibility. New hosted deployments set `strict`
+explicitly. Any other non-empty value is a startup error.
 
 ---
 
@@ -570,7 +602,7 @@ Missing tenant identity returns:
 
 The empty default tenant cannot be used through the normal data plane.
 
-Hosted Lens deployments SHOULD run in strict mode.
+Any deployment serving more than one tenant MUST run in strict mode.
 
 ---
 
@@ -597,14 +629,22 @@ Authentication resolves tenant exactly once.
 Request context gains:
 
 ```ts
-interface AuthenticatedRequestContext {
+interface AuthenticatedTenantRequestContext {
   tenant: TenantContext;
 
-  principal: AuthenticatedPrincipal;
+  actor:
+    | {
+        kind: "runtime_token";
+        principalId: string;
+        tokenId: string;
+      }
+    | {
+        kind: "tenant_user";
+        principalId: string;
+        scopes: ReadonlySet<string>;
+      };
 
-  token?: RuntimeTokenRecord;
-
-  tenantStore: ITenantRuntimeStore;
+  tenantStore: LensTenantStore;
 }
 ```
 
@@ -633,30 +673,34 @@ or accidentally calling a non-scoped method.
 RFC 0002 instead introduces a capability-style store.
 
 ```ts
-interface IRuntimeStore {
-  forTenant(tenantId: string): ITenantRuntimeStore;
+interface LensStore {
+  forTenant(tenantId: string): LensTenantStore;
 }
 ```
 
-`ITenantRuntimeStore` exposes only tenant-scoped operations:
+`LensTenantStore` exposes only tenant-scoped Lens operations and ownership
+bindings:
 
 ```ts
-interface ITenantRuntimeStore {
-  connections: ITenantConnectionStore;
-  tokens: ITenantTokenStore;
-  runs: ITenantRunLogStore;
-  approvals: ITenantApprovalStore;
-  authorization: ITenantAuthorizationStore;
-  usage: ITenantUsageStore;
+interface LensTenantStore {
+  connections: TenantConnectionBindingStore;
+  tokens: TenantTokenBindingStore;
+  oauth: TenantOAuthBindingStore;
+  runs: TenantRunBindingStore;
+  approvals: TenantApprovalStore;
+  authorization: TenantAuthorizationStore;
+  control: TenantControlEventStore;
+  usage: TenantUsageStore;
+  files: TenantTransitFileBindingStore;
 }
 ```
 
 Example:
 
 ```ts
-const tenantStore = runtimeStore.forTenant(ctx.tenant.tenantId);
+const tenantStore = lensStore.forTenant(ctx.tenant.tenantId);
 
-const connection = await tenantStore.connections.getByAlias("gmail", "primary");
+const connection = await tenantStore.connections.getByPublicName("gmail", "primary");
 ```
 
 No caller supplies the tenant again.
@@ -688,7 +732,7 @@ The unrestricted store interface MUST NOT be available inside normal data-plane 
 Only infrastructure that creates:
 
 ```text
-TenantScopedStore
+LensTenantStore
 ```
 
 or explicit operator services may receive it.
@@ -700,13 +744,13 @@ or explicit operator services may receive it.
 Cross-tenant administration uses a separate interface:
 
 ```ts
-interface IOperatorRuntimeStore {
+interface LensOperatorStore {
   listTenants(...): Promise<...>;
 
   forTenant(
     tenantId: string,
     operatorContext: OperatorContext,
-  ): ITenantRuntimeStore;
+  ): LensTenantStore;
 }
 ```
 
@@ -761,15 +805,11 @@ Tenant
         └── Token
 ```
 
-`RuntimeTokenRecord` gains:
+The upstream token record remains unchanged. `lens_token_tenants` binds its stable
+upstream token ID to one tenant. `lens_principals` and `lens_token_policies` use the
+same tenant and token pair.
 
-```ts
-tenantId: string;
-```
-
-in persisted representation.
-
-Legacy records are backfilled to:
+Legacy Lens records are backfilled to:
 
 ```text
 ""
@@ -786,7 +826,7 @@ interface AuthorizationResource {
   tenantId: string;
 
   providerId: string;
-  connectionId: string;
+  connectionAuthority: { kind: "binding"; id: string } | { kind: "no_auth"; service: string };
   resourceId?: string;
   ownerId?: string;
   resourceType?: string;
@@ -827,105 +867,207 @@ If any component cannot be resolved into the current tenant, execution stops.
 
 # Data model
 
-After RFC 0001 migrations, add:
+Tenant ownership is stored only in Lens tables. Upstream connections, connection
+revisions, runtime tokens, run logs, and transit-file implementations remain
+unchanged.
+
+Lens adds versioned, idempotent migrations under `src/lens/`. The first migration
+creates `lens_schema_migrations`; later migrations are applied in order and recorded
+there. The same logical schema and migration tests run against SQLite, D1, and
+PostgreSQL.
+
+Each migration version is immutable. SQLite takes a write lock, PostgreSQL takes a
+Lens-specific advisory lock, and D1 serializes migration writes through its database
+API. A version is recorded only after schema verification succeeds. A concurrent
+runner that observes an already-applied change re-verifies it instead of failing.
+
+Strict routes do not serve until migration completes. A migration failure leaves the
+previous version recorded, returns `503 lens_storage_unavailable`, and never falls back
+to an unscoped store.
+
+The RFC 0002 ownership tables are:
 
 ```text
-0015_tenant_scope.sql
+lens_token_tenants
+  tenant_id
+  upstream_token_id
+  created_at
+
+lens_connection_bindings
+  id
+  tenant_id
+  service
+  public_name
+  upstream_name
+  upstream_connection_id  nullable until upstream creation succeeds
+  state                  pending | active | deleted
+  created_at
+  updated_at
+  deleted_at
+
+lens_oauth_bindings
+  state_hash
+  tenant_id
+  connection_binding_id
+  initiated_by_subject
+  created_at
+  expires_at
+  consumed_at
+
+lens_transit_file_bindings
+  id
+  tenant_id
+  upstream_file_id
+  created_at
+  expires_at
+
+lens_run_bindings
+  tenant_id
+  upstream_run_id
+  upstream_token_id
+  decision_id
+  created_at
+
+lens_control_events
+  id
+  actor_kind             tenant_user | operator
+  actor_subject
+  target_scope           tenant | deployment
+  tenant_id              nullable only for deployment scope
+  operation
+  resource_type
+  resource_id
+  outcome
+  created_at
 ```
 
-Exact numbering may be adjusted to repository state.
+`lens_control_events` enforces exactly one target form: `target_scope = tenant`
+requires a non-empty `tenant_id`, while `target_scope = deployment` requires
+`tenant_id IS NULL`. Tenant-user evidence is always tenant-scoped. Operator evidence
+uses tenant scope for tenant routes and deployment scope for global operator routes.
+The empty tenant ID is never a global scope.
 
-Add:
+Existing Lens-owned customer records also gain `tenant_id` through those migrations:
 
-```sql
-tenant_id TEXT NOT NULL DEFAULT ''
-```
+- `lens_principals`;
+- `lens_token_policies`;
+- `lens_decisions`;
+- `lens_approvals`;
+- `lens_reservations`.
 
-to all tenant-owned data.
+Approvals and decisions also store the immutable connection authority used by the
+request: either a Lens connection-binding ID or the `no_auth:<service>` sentinel.
+Decisions additionally store operation kind (`action` or `proxy`), execution ID,
+outcome, and upstream audit-persistence status where applicable. No Lens row treats a
+mutable public alias as durable authority.
 
-At minimum:
-
-- connections;
-- connection identities;
-- connection revisions;
-- runtime tokens;
-- run logs;
-- authorization decisions;
-- action approvals;
-- execution grants;
-- usage reservations.
-
-Any additional persisted customer-specific tables discovered during implementation MUST also be scoped.
+Tenant-user and operator connection, OAuth, token, policy, and approval mutations
+write `lens_control_events`. Global OAuth configuration and runtime-policy operations
+write deployment-scoped events. Evidence is written for both successful and denied
+attempts without storing credentials, JWTs, OAuth codes, or action input.
 
 ---
 
 # Connection alias uniqueness
 
-Current uniqueness:
+The upstream uniqueness rule remains unchanged:
 
 ```text
 (service, alias)
 ```
 
-becomes:
+Lens exposes tenant-local public names and maps each one to an opaque upstream name:
 
 ```text
-(tenant_id, service, alias)
+(tenant_id, service, public_name) -> upstream_name
 ```
 
-Therefore both tenants may safely have:
+The internal name uses an unpredictable form such as:
+
+```text
+lc_<random-id>
+```
+
+The tenant never supplies or receives this internal name. Therefore both tenants may
+safely have:
 
 ```text
 service = gmail
-alias   = primary
+public_name = primary
 ```
 
-without collision.
+while upstream still sees two globally unique connection names.
 
 ---
 
 # Composite tenant integrity
 
-Tenant filtering alone is insufficient if child records can reference parent records in another tenant.
+Tenant filtering alone is insufficient if a Lens child record can reference a Lens
+parent record in another tenant.
 
-Where practical, database constraints SHOULD enforce tenant consistency.
+The Lens schema MUST enforce tenant consistency in every supported database.
 
-Example:
+Credentialed bindings use:
 
 ```sql
-UNIQUE (tenant_id, id)
+UNIQUE (tenant_id, id),
+UNIQUE (upstream_connection_id),
+UNIQUE (upstream_name)
 ```
 
-on connections.
+on `lens_connection_bindings`.
 
-Child records then reference:
+Public-name reuse after deletion is controlled by a partial unique index:
+
+```sql
+CREATE UNIQUE INDEX lens_connection_bindings_public_name
+ON lens_connection_bindings (tenant_id, service, public_name)
+WHERE state IN ('pending', 'active');
+```
+
+Credentialed child records then reference:
 
 ```text
-(tenant_id, connection_id)
+(tenant_id, connection_binding_id)
 ```
 
 rather than only:
 
 ```text
-connection_id
+connection_binding_id
 ```
 
 This prevents:
 
 ```text
-tenant A revision
+tenant A approval
         ↓
-tenant B connection
+tenant B connection binding
 ```
 
 from existing even if application code is buggy.
 
+Rows for credentialless providers store `no_auth:<service>` instead and have no
+connection-binding foreign key. A schema check permits exactly one authority form.
+
 The same principle applies to:
 
+- principals and token policies → token-tenant bindings;
 - approvals → authorization decisions;
 - execution grants → approvals;
 - runs → authorization decisions;
 - usage reservations → principals/tokens where supported.
+
+`lens_token_tenants.upstream_token_id` is unique. Principal, policy, decision,
+approval, reservation, and run rows reference the same `(tenant_id,
+upstream_token_id)` pair, so a token cannot acquire records in two tenants.
+
+`lens_oauth_bindings.state_hash`, `lens_transit_file_bindings.upstream_file_id`, and
+`lens_run_bindings.upstream_run_id` are each unique. One upstream OAuth state, file, or
+run therefore cannot be bound into two tenant scopes.
+
+`public_name` uses the existing upstream connection-name syntax and length limit even
+though it is not sent upstream. This keeps REST, MCP, and CLI behavior stable.
 
 ---
 
@@ -936,37 +1078,39 @@ Tenant-prefixed indexes are required for hot paths.
 Examples:
 
 ```sql
-CREATE INDEX idx_connections_tenant
-ON connections (tenant_id);
+CREATE INDEX lens_connection_bindings_lookup
+ON lens_connection_bindings (tenant_id, service, public_name, state);
 
-CREATE INDEX idx_connections_tenant_service_alias
-ON connections (tenant_id, service, alias);
+CREATE INDEX lens_run_bindings_created
+ON lens_run_bindings (tenant_id, created_at);
 
-CREATE INDEX idx_runs_tenant_created
-ON run_logs (tenant_id, created_at);
+CREATE INDEX lens_decisions_tenant_created
+ON lens_decisions (tenant_id, created_at);
 
-CREATE INDEX idx_authz_tenant_created
-ON authorization_decisions (tenant_id, created_at);
-
-CREATE INDEX idx_approvals_tenant_state
-ON action_approvals (tenant_id, state, requested_at);
+CREATE INDEX lens_approvals_tenant_state
+ON lens_approvals (tenant_id, state, requested_at);
 ```
 
-D1 and SQLite implementations must remain behaviorally equivalent.
+SQLite, D1, and PostgreSQL implementations must remain behaviorally equivalent.
 
 ---
 
 # Credentials
 
-Connection credentials inherit their connection's tenant scope.
+Upstream still owns encrypted credentials. Lens owns the tenant-to-connection
+binding that permits access to them.
 
 Credential retrieval always happens through:
 
 ```text
-TenantConnectionStore
+LensTenantStore.connections
 ```
 
-The runtime MUST NOT expose a method equivalent to:
+That store resolves an active binding and then calls the existing upstream store with
+the binding's opaque internal name. Tenant-facing code MUST NOT call an upstream
+credential lookup with a tenant-supplied name or ID.
+
+Lens tenant routes MUST NOT expose a method equivalent to:
 
 ```ts
 getCredential(connectionId);
@@ -974,31 +1118,40 @@ getCredential(connectionId);
 
 without tenant context.
 
+Credentialless `no_auth` providers do not create an upstream connection or Lens
+binding. Lens exposes their catalog-derived virtual `default` connection inside every
+tenant. Authorization resources use the tenant plus `no_auth:<service>` sentinel, and
+approval digests persist that sentinel instead of a connection-binding ID.
+
 ---
 
 # Encryption binding
 
-Where the existing encryption primitive supports authenticated additional data, encrypt connection secrets using context such as:
+This RFC does not modify upstream credential encryption. Tenant safety comes from the
+Lens ownership binding and the strict outer gateway.
+
+Every encrypted Lens approval stores an envelope containing:
 
 ```text
 tenant_id
-connection_id
-credential_type
+connection_authority
+approval_id
+input
 ```
 
-Conceptually:
+After decryption, Lens MUST compare all three identifiers with the approval row before
+reading `input`. A mismatch fails with `execution_grant_invalid`.
+
+If the Lens codec supports authenticated additional data, it also uses:
 
 ```ts
 encrypt(secret, {
-  aad: `${tenantId}:${connectionId}:${credentialType}`,
+  aad: `${tenantId}:${connectionAuthority}:${approvalId}`,
 });
 ```
 
-This provides defense in depth.
-
-If ciphertext belonging to tenant A is accidentally attached to tenant B, authenticated decryption fails rather than silently returning valid credentials.
-
-If the current encryption implementation cannot support AAD cleanly, this may ship as a follow-up security hardening task rather than blocking Phase 1.
+The verified envelope is mandatory. Cryptographic AAD is defense in depth and is not
+the only protection against ciphertext reassignment.
 
 ---
 
@@ -1009,13 +1162,16 @@ All lookups occur inside the scoped store.
 Example:
 
 ```ts
-ctx.tenantStore.connections.getByAlias("stripe", "billing");
+ctx.tenantStore.connections.getByPublicName("stripe", "billing");
 ```
 
-Even if a caller knows another tenant's globally unique connection ID:
+This returns a Lens binding. Only the Lens execution service may extract its opaque
+upstream name.
+
+Even if a caller knows another tenant's Lens binding ID or upstream connection ID:
 
 ```text
-conn_xyz
+binding_xyz / conn_xyz
 ```
 
 the scoped lookup behaves as if it does not exist.
@@ -1040,27 +1196,22 @@ The callback must retain the original authority boundary.
 
 # OAuth state binding
 
-`oauth-flow-service.ts` already round-trips signed state.
+`oauth-flow-service.ts` already creates a random, expiring, single-use state value and
+stores it until callback completion. That upstream contract remains unchanged.
 
-Extend state to include:
+The Lens flow is:
 
-```ts
-interface OAuthStatePayload {
-  tenantId: string;
+1. create a `pending` `lens_connection_bindings` row with a tenant-local public
+   name and an opaque upstream name;
+2. call the existing upstream OAuth start service with the opaque upstream name;
+3. hash the returned state with SHA-256;
+4. store the state hash, tenant ID, initiating JWT subject, pending binding ID, and
+   expiry in
+   `lens_oauth_bindings`;
+5. return the existing provider authorization URL to the caller.
 
-  principalId?: string;
-
-  connectionAlias?: string;
-
-  nonce: string;
-
-  issuedAt: string;
-
-  expiresAt: string;
-}
-```
-
-The tenant ID is therefore cryptographically bound to the OAuth flow that initiated authorization.
+The plaintext state remains in the upstream one-time state store. Lens does not copy
+OAuth client secrets, PKCE verifiers, or credentials into its overlay.
 
 ---
 
@@ -1069,29 +1220,31 @@ The tenant ID is therefore cryptographically bound to the OAuth flow that initia
 The callback MUST NOT choose tenancy from:
 
 - current browser state;
-- query parameters other than verified signed state;
+- query parameters other than the verified one-time state;
 - an arbitrary request header.
 
-It writes the resulting connection into:
+In strict mode, the outer Lens wrapper intercepts `/oauth/callback`. It hashes the
+state, loads the matching pending Lens binding, and then delegates the same request to
+the existing upstream callback. Only a successful upstream completion may move the
+Lens binding from `pending` to `active`.
 
-```text
-state.tenantId
-```
-
-after verifying the OAuth state.
+If Lens activation fails after upstream credential creation, the credential remains an
+unreachable orphan under an opaque name. Cleanup may remove expired pending bindings
+and their orphaned upstream connections. It must never expose them to another tenant.
 
 ---
 
 # OAuth replay
 
-OAuth state SHOULD remain:
+OAuth state remains:
 
-- signed;
+- high entropy;
 - expiring;
-- nonce-bound;
-- single-use where the current implementation supports it.
+- stored server-side;
+- single-use.
 
-A completed or expired state cannot create a second connection.
+A completed, unknown, or expired state cannot activate a connection. The Lens state
+binding is consumed with an atomic `pending` to `active` transition.
 
 ---
 
@@ -1112,7 +1265,7 @@ Tenant-specific OAuth client applications remain a non-goal.
 
 # Authorization decisions
 
-RFC 0001 authorization evidence becomes tenant-bound.
+RFC 0001 Lens authorization evidence becomes tenant-bound.
 
 Example:
 
@@ -1127,13 +1280,15 @@ interface AuthorizationEvidence {
 }
 ```
 
-A decision cannot later be resolved or executed under another tenant.
+A decision cannot later be resolved or executed under another tenant. The decision
+stores its immutable connection-binding ID or no-auth sentinel in addition to the
+display name used for operator evidence.
 
 ---
 
 # Action approvals
 
-Approval records gain:
+`lens_approvals` gains:
 
 ```text
 tenant_id
@@ -1142,7 +1297,7 @@ tenant_id
 and are accessed only through:
 
 ```text
-ITenantApprovalStore
+LensTenantStore.approvals
 ```
 
 An approval ID from another tenant returns:
@@ -1155,27 +1310,40 @@ not_found
 
 # Execution grants
 
-Execution grants gain:
+Lens execution grants gain:
 
 ```ts
 tenantId: string;
 ```
 
-The grant digest SHOULD include tenant identity.
+The grant digest MUST include tenant identity and the immutable connection-binding ID
+or no-auth sentinel. It hashes a canonical JSON tuple, not ambiguous string
+concatenation and never a mutable public alias.
 
 Conceptually:
 
 ```text
 SHA-256(
-  tenantId
-  + principal
-  + action
-  + resource
-  + canonical input
+  canonicalJson([
+    tenantId,
+    principalId,
+    tokenId,
+    actionId,
+    connectionAuthority,
+    resource,
+    canonicalInput
+  ])
 )
 ```
 
-A grant created under tenant A is unusable in tenant B.
+A grant created under tenant A is unusable in tenant B. Changing the binding ID,
+substituting a `no_auth:<service>` sentinel, or changing any other tuple member makes
+the grant invalid.
+
+Before consuming a credentialed grant, Lens reloads the stored connection binding by
+tenant and binding ID and requires `state = active`. For a no-auth grant, it verifies
+that the provider still declares `no_auth`. It never resolves the current value of a
+mutable public name.
 
 ---
 
@@ -1201,15 +1369,11 @@ tenant A worker context
 
 # Usage reservations and budgets
 
-Usage reservations from RFC 0001 become tenant-bound.
-
-Add:
+Usage reservations from RFC 0001 become tenant-bound in:
 
 ```text
-tenant_id
+lens_reservations.tenant_id
 ```
-
-to usage reservations.
 
 This prevents reservations or counters from colliding across tenants.
 
@@ -1241,10 +1405,10 @@ Implementation of tenant-level usage limits MAY follow the core tenant isolation
 
 # Run logs
 
-`RunLog` gains:
+The upstream `RunLog` type and table remain unchanged. Lens stores tenant ownership in:
 
-```ts
-tenantId: string;
+```text
+lens_run_bindings(tenant_id, upstream_run_id, upstream_token_id, decision_id, created_at)
 ```
 
 Every run is therefore attributable to:
@@ -1258,7 +1422,23 @@ action
 resource
 ```
 
-Run logs are queried through the tenant-scoped store.
+Run logs are queried through `LensTenantStore.runs`. The store first finds allowed
+upstream run IDs in Lens and then retrieves only those rows from the existing upstream
+run-log service.
+
+Lens writes the authorization decision before calling the provider. After the existing
+`ActionRunner` returns, it links the execution ID and writes the run binding. If the
+upstream run exists but the Lens binding write fails, the run stays hidden from tenant
+queries. Lens may best-effort mark the decision `runBindingPersisted = false`, but
+readiness MUST NOT attach an upstream run to a decision by token and time heuristics.
+The current upstream run has no Lens decision correlation ID, so an operator must
+investigate the orphan. Automatic repair requires a future explicit correlation seam
+or RFC. If upstream audit persistence itself fails, the Lens decision records the
+execution ID, outcome, and `auditPersisted = false` for operator investigation.
+
+Provider proxy calls do not create upstream run logs. Lens writes tenant-scoped proxy
+decision evidence with service, immutable connection authority, method, redacted
+endpoint, outcome, and timestamp.
 
 Normal APIs cannot request logs from another tenant.
 
@@ -1303,6 +1483,7 @@ Every durable execution object MUST persist:
 
 ```text
 tenant_id
+connection_authority = connection_binding_id | no_auth:<service>
 ```
 
 Workers reconstruct trusted runtime scope from persisted execution metadata.
@@ -1336,7 +1517,7 @@ worker loads approval
 Worker obtains:
 
 ```ts
-runtimeStore.forTenant("acct_A");
+lensStore.forTenant("acct_A");
 ```
 
 and resumes execution inside that capability.
@@ -1355,7 +1536,7 @@ A retry request cannot alter:
 tenantId
 principalId
 authorizationDecisionId
-connectionId
+connectionAuthority
 ```
 
 unless a new authorization request is created.
@@ -1389,7 +1570,10 @@ Within tenant A:
 list_connections
 ```
 
-returns tenant A connections only.
+returns tenant A connections allowed by the calling runtime token's upstream policy.
+Credentialed connections return public names and Lens binding IDs. A credentialless
+virtual `default` connection keeps the existing catalog-derived virtual ID and has no
+Lens binding row. Upstream stored connection IDs and opaque names are never returned.
 
 ```text
 execute_action
@@ -1407,25 +1591,229 @@ returns tenant A approvals for the requesting principal only.
 run history
 ```
 
-is tenant-scoped.
+is limited to runs created by the calling runtime token.
 
-Wire shapes remain stable.
+The existing five MCP tools keep their wire shapes. RFC 0002 adds
+`list_my_pending_authorizations` and `get_my_run`; both are self-only and additive.
+
+---
+
+# Strict execution assembly
+
+`lens.wrapApp` creates an outer Hono application. It registers Lens tenant and
+operator routes before mounting the upstream app as the final fallback. Therefore
+strict Lens routes do not pass through upstream admin middleware.
+
+Conceptually:
+
+```ts
+interface LensInstallation {
+  wrapActionRunner?: (actions: ActionRunner) => ActionRunner;
+  wrapApp(upstream: Hono): Hono;
+  close(): Promise<void>;
+}
+```
+
+The existing `wrapActionRunner` remains the RFC 0001 enforcement point for legacy raw
+routes. Strict routes use a Lens execution service that accepts an immutable
+`AuthenticatedTenantRequestContext` and assembles the existing exported upstream
+services with tenant-scoped adapters:
+
+```text
+TenantConnectionStore adapter
+        +
+TenantTransitFileStore adapter
+        ↓
+existing ConnectionService
+existing ActionRunner / ProxyRunner / createMcpServer
+```
+
+The adapter preserves the ID domain expected by those upstream services. The
+upstream connection store and runtime-token records retain upstream connection IDs.
+`TenantConnectionStore` presents the active Lens binding ID as `StoredConnection.id`
+and the public name as its name, while mapping get, set, update, and delete operations
+to the opaque upstream name and record internally. Existing `ConnectionService`, MCP,
+`ActionRunner`, and `ProxyRunner` therefore see only Lens binding IDs on strict paths.
+
+Before constructing the request `ActionPolicySnapshot`, the strict policy assembler
+maps every upstream ID in the token record's `allowedConnections` back to an active
+Lens binding in the same tenant. If a non-empty upstream allowlist contains any ID
+that cannot be mapped, policy resolution fails closed before a runner or provider is
+called. It MUST NOT become an empty list because the upstream policy model treats an
+empty list as unrestricted. Operator policy writes map Lens IDs to upstream IDs and
+reads map upstream IDs back to Lens IDs; neither direction exposes internal IDs.
+Credentialless `no_auth` execution keeps its existing policy behavior and does not
+invent a connection grant.
+
+RFC 0001's current `LensRuntime.wrap` retains one inner runner. PR 7 refactors that
+Lens-owned code so authorization receives the scoped runner as an explicit execution
+argument. The legacy wrapper delegates with the global runner; strict requests and
+approval resumes delegate with their reconstructed tenant runner. No mutable current
+runner or ambient tenant is shared between requests.
+
+The shared catalog, provider loader, runtime database, transit-file service, policy,
+and codec are passed through the existing Node and Cloudflare Lens installation seam.
+Provider executors remain lazy. Lens does not copy provider logic or upstream route
+handlers.
+
+The current inner `lens.registerRoutes(app)` seam is removed when `wrapApp` lands.
+Node calls `lens.close()` during graceful shutdown. RFC 0004 owns the exact planned
+seam registry.
+
+In legacy mode, the outer app serves the existing RFC 0001 `/lens/*` routes with their
+current console-admin behavior and passes raw upstream routes through. In strict mode,
+the tenant-user and operator JWT rules in this RFC replace console-admin authority for
+Lens state. `LENS_DISABLED=1` makes `wrapApp` an identity wrapper only in legacy mode.
+Combining `LENS_DISABLED=1` with `LENS_TENANCY_MODE=strict` is a startup error.
 
 ---
 
 # REST API
 
-Existing runtime endpoints become tenant-scoped automatically.
-
-Examples:
+Tenant data-plane routes live only under the Lens namespace:
 
 ```text
-/api/connections
-/v1/actions/...
-/v1/runs/...
+/lens/v1/actions/*
+/lens/v1/proxy/*
+/lens/mcp
+/lens/api/connections
+/lens/api/oauth/authorizations
+/lens/api/runs
+/lens/api/approvals
+/lens/api/decisions
+/lens/api/files
 ```
 
-Tenant selection is not added as a normal query parameter.
+These routes resolve one trusted `TenantContext`, use only the scoped Lens store, and
+resolve public connection and file IDs to Lens binding IDs before delegation. The
+scoped adapters translate to opaque upstream names and IDs only at their persistence
+boundary.
+
+Strict route authorization is fixed:
+
+| Route                                 | Credential                       | Required scope                |
+| ------------------------------------- | -------------------------------- | ----------------------------- |
+| `/lens/v1/actions/*`                  | runtime token                    | upstream action policy        |
+| `/lens/v1/proxy/*`                    | runtime token                    | upstream proxy policy         |
+| `/lens/mcp`                           | runtime token                    | upstream action/proxy policy  |
+| `GET /lens/api/connections*`          | tenant-user JWT                  | `lens.connections.read`       |
+| write `/lens/api/connections*`        | tenant-user JWT                  | `lens.connections.write`      |
+| `POST /lens/api/oauth/authorizations` | tenant-user JWT                  | `lens.connections.write`      |
+| `GET /lens/api/runs*`                 | tenant-user JWT                  | `lens.audit.read`             |
+| `GET /lens/api/decisions*`            | tenant-user JWT                  | `lens.audit.read`             |
+| `GET /lens/api/approvals*`            | tenant-user JWT                  | `lens.approvals.read`         |
+| resolve `/lens/api/approvals*`        | tenant-user JWT                  | `lens.approvals.resolve`      |
+| `/lens/api/files*`                    | runtime token or tenant-user JWT | token binding or `lens.files` |
+
+The file route accepts either listed class but authenticates exactly one. A runtime
+token may access tenant files for action preparation. A tenant-user JWT requires the
+`lens.files` scope.
+
+The Node and Cloudflare entrypoints add one marked outer seam:
+
+```ts
+const servedApp = lens.wrapApp(app); // lens-seam
+```
+
+In `legacy` mode, the wrapper passes existing behavior through. In `strict` mode, raw
+upstream access is a method-aware, fail-closed allowlist. The wrapper may dispatch
+only these current routes upstream:
+
+```text
+GET /health
+GET /v1/health
+GET /v1/providers
+GET /v1/actions
+GET /v1/actions/search
+GET /v1/actions/:actionId
+GET /openapi.json
+GET /docs
+GET /api/providers
+GET /api/providers/:service
+GET /api/actions
+GET /api/actions/search
+GET /api/actions/:actionId
+GET /api/actions/:actionId/agent.md
+GET /api/auth/session
+POST /api/auth/logout
+```
+
+The existing console shell and static assets may also pass only through the exact
+method and path set owned by the existing static-route helpers. `/oauth/callback` is
+handled by Lens only when it matches a pending Lens flow; it is never a raw upstream
+fallback in strict mode. Every other upstream route is denied before dispatch,
+including all `/mcp` routes, stateful `/v1` and `/api` routes, unknown future routes,
+and method mismatches such as `POST /v1/actions/:actionId`. Matching uses the HTTP
+method and canonical path. Encoded separators, duplicate slashes, case changes, and
+trailing-slash variants are denied unless the exact allowlist helper explicitly owns
+that canonical form.
+
+The strict gateway is the security boundary. Raw upstream stateful endpoints are not
+an alternate operator plane. Tenant and operator state goes through Lens routes.
+Tenant selection is never accepted as a normal query parameter, header, body field,
+or action input.
+
+---
+
+# Idempotency isolation
+
+Lens reuses the upstream idempotency store but namespaces every strict action key
+before calling it:
+
+```text
+SHA-256(
+  canonicalJson([
+    "lens:v1",
+    tenant_id,
+    upstream_token_id,
+    connection_binding_id_or_no_auth_sentinel,
+    caller_idempotency_key
+  ])
+)
+```
+
+The request hash also includes tenant ID, token ID, immutable connection authority,
+action ID, and canonical input. The caller's plaintext key is never persisted. The
+same key may be used independently by two tenants, while reuse with different input or
+authority inside one tenant returns the existing upstream conflict response.
+
+---
+
+# Provider proxy boundary
+
+Strict proxy requests require a bound runtime token, the token's upstream proxy
+permission, and a verified tenant connection authority. Credentialed providers require
+an active binding; credentialless providers require the catalog-derived
+`no_auth:<service>` sentinel. Lens records tenant-scoped proxy decision evidence before
+and after dispatch.
+
+RFC 0001 meters and human approvals do not yet apply to arbitrary proxy requests, as
+recorded in RFC 0001's implementation status. A deployment that needs those controls
+MUST block the affected proxy service until a separate proxy-authorization design
+lands. This limitation does not weaken tenant isolation.
+
+---
+
+# Transit files
+
+Every strict-mode upload creates a `lens_transit_file_bindings` row. The tenant sees
+the Lens binding ID as `fileId`; the upstream storage ID is private to the Lens file
+service.
+
+Reads, deletes, and action input resolution require a binding owned by the current
+tenant. A file ID from another tenant returns `not_found`. Expiry and cleanup remove
+the binding and its upstream object together where possible; an orphaned object is not
+reachable without a live Lens binding.
+
+The tenant-scoped transit adapter wraps the existing upstream service. `read` and
+`delete` translate a Lens file ID only after tenant ownership checks. `create` writes
+the upstream object, writes its Lens binding, and returns a Lens file ID plus a
+`/lens/api/files/:id` download URL. Provider-generated files use the same adapter, so
+action output never exposes an upstream file ID or raw `/api/files` URL.
+
+If binding creation fails, Lens deletes the new upstream object and fails the request.
+If cleanup also fails, the object is an unreachable orphan and the readiness cleanup
+job retries deletion.
 
 ---
 
@@ -1433,31 +1821,46 @@ Tenant selection is not added as a normal query parameter.
 
 Cross-tenant administration is explicitly separated.
 
-Example namespace:
+Namespace:
 
 ```text
-/api/operator/...
+/lens/operator/...
 ```
 
-Potential endpoints:
+Required operator surface:
 
 ```text
-GET /api/operator/tenants
-GET /api/operator/tenants/:tenantId/connections
-GET /api/operator/tenants/:tenantId/runs
-GET /api/operator/tenants/:tenantId/approvals
+GET /lens/operator/tenants
+GET /lens/operator/tenants/:tenantId/readiness
+GET /lens/operator/tenants/:tenantId/connections
+GET /lens/operator/tenants/:tenantId/runs
+GET /lens/operator/tenants/:tenantId/approvals
+GET /lens/operator/tenants/:tenantId/decisions
+GET /lens/operator/tenants/:tenantId/runtime-tokens
+POST /lens/operator/tenants/:tenantId/runtime-tokens
+PUT /lens/operator/tenants/:tenantId/runtime-tokens/:tokenId
+DELETE /lens/operator/tenants/:tenantId/runtime-tokens/:tokenId
+GET /lens/operator/oauth/configs
+PUT /lens/operator/oauth/configs/:service
+DELETE /lens/operator/oauth/configs/:service
+GET /lens/operator/runtime-policy
+PUT /lens/operator/runtime-policy
 ```
 
 These endpoints:
 
-- require operator authentication;
-- require RFC 0001 authorization;
+- require operator-audience JWT authentication and the `lens.operator` scope;
 - produce authorization evidence;
-- explicitly identify the target tenant.
+- explicitly identify either a route tenant or the fixed deployment scope.
 
-The exact operator API surface may remain minimal in RFC 0002.
-
-The separation itself is mandatory.
+`GET /lens/operator/tenants` derives tenant IDs from Lens-owned tables until a tenant
+registry exists. It and the global OAuth-config and runtime-policy routes use
+deployment scope. Routes under `/lens/operator/tenants/:tenantId` use tenant scope.
+Operator token creation and policy updates accept Lens
+connection-binding IDs, convert them to upstream connection IDs for the upstream token
+policy, convert them back for reads, and never expose those internal IDs in a
+response. A non-empty upstream connection allowlist that cannot be mapped completely
+to active bindings in the target tenant fails closed.
 
 ---
 
@@ -1488,15 +1891,20 @@ This reduces accidental operator actions against the wrong customer.
 
 # Operator evidence
 
-Cross-tenant operator reads and writes should generate evidence containing:
+Operator reads and writes MUST write `lens_control_events` evidence containing:
 
 ```text
 operator principal
-target tenant
+target scope
+target tenant when target scope is tenant
 action
 resource
 timestamp
 ```
+
+The operator principal is the verified JWT `sub`. Tenant routes write tenant scope.
+Tenant enumeration and global OAuth-config and runtime-policy routes write deployment
+scope with `tenant_id = NULL`. No event uses the empty tenant ID as global scope.
 
 A future enterprise customer should be able to answer:
 
@@ -1598,7 +2006,7 @@ This prevents observability infrastructure from becoming expensive or unstable a
 Add:
 
 ```ts
-type TenantErrorCode = "tenant_required" | "tenant_invalid" | "tenant_mismatch";
+type TenantErrorCode = "tenant_required" | "tenant_invalid" | "tenant_mismatch" | "unauthorized" | "insufficient_scope";
 ```
 
 Examples:
@@ -1615,7 +2023,19 @@ Examples:
 401 tenant_invalid
 ```
 
-### JWT/token disagreement
+### Credential class is invalid for the route
+
+```text
+401 unauthorized
+```
+
+### Required tenant-user scope is missing
+
+```text
+403 insufficient_scope
+```
+
+### Trusted Lens bindings disagree
 
 ```text
 403 tenant_mismatch
@@ -1631,15 +2051,15 @@ Do not reveal the other tenant.
 
 # Data migration
 
-All existing rows are backfilled with:
+Only existing Lens-owned rows are backfilled with:
 
 ```text
 tenant_id = ''
 ```
 
-This preserves compatibility.
-
-No existing connection aliases change behavior in legacy mode.
+Upstream rows are not rewritten. Existing connections and runtime tokens keep their
+current behavior in legacy mode. Moving them into strict mode requires explicit Lens
+bindings.
 
 ---
 
@@ -1661,15 +2081,33 @@ is an explicit operator action.
 
 Lens MUST NOT guess which hosted tenant should inherit old default-tenant resources.
 
-Before enabling strict mode, operators should:
+Before enabling strict mode, operators MUST:
 
-- migrate or recreate legacy connections;
-- bind runtime tokens to explicit tenants;
+- configure Lens JWKS, issuer, and distinct tenant/operator audiences;
+- configure an encrypted injected secret codec for credentials, OAuth state, and Lens
+  approval envelopes;
+- create Lens bindings for connections that should belong to the first tenant;
+- bind runtime tokens and principals to explicit tenants;
 - verify no production workflow depends on the default tenant.
 
-Strict mode may warn when legacy rows remain.
+Strict hosted Node deployments MUST use all three existing shared storage boundaries:
 
-It should not silently reassign them.
+```text
+Lens state:             LENS_DATABASE_URL (PostgreSQL)
+upstream runtime state: OOMOL_CONNECT_DATABASE_URL (PostgreSQL)
+transit files:          OOMOL_CONNECT_TRANSIT_FILE_BACKEND=s3
+```
+
+Startup and readiness refuse local `lens.sqlite`, the upstream SQLite runtime store,
+or local transit files in strict hosted Node mode. Workers use shared D1 plus the
+configured KV or R2 transit binding. This avoids split tenant authority, token policy,
+run, idempotency, and file state across replicas.
+
+Strict startup also refuses an unencrypted secret codec. Legacy mode keeps the current
+warning-only behavior for local development.
+
+Strict readiness fails when active production resources remain unbound or when legacy
+Lens rows are still required. It never silently reassigns them.
 
 ---
 
@@ -1698,39 +2136,43 @@ If Lens later requires deployment-global resources, introduce an explicit system
 Conceptual structure:
 
 ```ts
-interface IRuntimeStore {
-  forTenant(tenantId: string): ITenantRuntimeStore;
+interface LensStore {
+  forTenant(tenantId: string): LensTenantStore;
 
-  operator(): IOperatorRuntimeStore;
+  operator(): LensOperatorStore;
 }
 ```
 
 Implementations:
 
 ```text
-sqlite-runtime-store.ts
-d1-runtime-store.ts
+src/lens/db-sqlite.ts
+src/lens/db.ts                    D1 adapter
+src/lens/db-postgres.ts
 ```
 
-must provide equivalent tenant behavior.
+must provide equivalent tenant behavior and migration semantics. SQLite remains for
+legacy local development. Strict hosted Node uses PostgreSQL through
+`LENS_DATABASE_URL`, while its existing upstream runtime database and transit service
+must also be shared as specified above. Strict Workers use D1 and KV or R2.
 
 ---
 
 # Example tenant connection store
 
 ```ts
-interface ITenantConnectionStore {
-  create(input: ConnectionCreateInput): Promise<Connection>;
+interface TenantConnectionBindingStore {
+  create(input: ConnectionBindingCreateInput): Promise<ConnectionBinding>;
 
-  getById(id: string): Promise<Connection | null>;
+  getById(id: string): Promise<ConnectionBinding | null>;
 
-  getByAlias(service: string, alias: string): Promise<Connection | null>;
+  getByPublicName(service: string, name: string): Promise<ConnectionBinding | null>;
 
-  list(input?: ConnectionListInput): Promise<Connection[]>;
+  list(input?: ConnectionBindingListInput): Promise<ConnectionBinding[]>;
 
-  update(id: string, input: ConnectionUpdateInput): Promise<Connection | null>;
+  rename(id: string, publicName: string): Promise<ConnectionBinding | null>;
 
-  delete(id: string): Promise<boolean>;
+  markDeleted(id: string): Promise<boolean>;
 }
 ```
 
@@ -1766,23 +2208,25 @@ Headers are ignored.
 
 ---
 
-## Threat: JWT/token confusion
+## Threat: credential-class confusion
 
-JWT says:
+Tenant-user JWT calls:
 
 ```text
-tenant A
+/lens/v1/actions/...
 ```
 
-token says:
+or a runtime token calls:
 
 ```text
-tenant B
+/lens/api/approvals/.../approve
 ```
 
 Mitigation:
 
-Fail closed with `tenant_mismatch`.
+The route chooses its credential class before authentication and fails with
+`unauthorized`. Contradictory stored token/principal tenant bindings fail separately
+with `tenant_mismatch`.
 
 ---
 
@@ -1791,7 +2235,7 @@ Fail closed with `tenant_mismatch`.
 Tenant A learns:
 
 ```text
-conn_victim
+binding_victim or conn_victim
 ```
 
 and sends it directly.
@@ -1812,7 +2256,8 @@ gmail / primary
 
 Mitigation:
 
-Uniqueness includes `tenant_id`.
+Lens public-name uniqueness includes `tenant_id`; upstream receives separate opaque
+names.
 
 ---
 
@@ -1823,6 +2268,18 @@ Developer adds a new route but forgets tenant filtering.
 Mitigation:
 
 Handler receives tenant-scoped store rather than unrestricted data store.
+
+---
+
+## Threat: raw upstream route bypass
+
+Attacker calls `/v1`, `/mcp`, or a stateful `/api` route instead of the Lens tenant
+route.
+
+Mitigation:
+
+The strict outer application wrapper dispatches only the exact method-aware safe
+allowlist and denies every other request before upstream dispatch.
 
 ---
 
@@ -1842,7 +2299,8 @@ Approved action resumes later in generic worker.
 
 Mitigation:
 
-Tenant ID persisted on approval/execution object and used to construct scoped store.
+Tenant ID and immutable connection authority are persisted on the approval/execution
+object and used to construct the scoped store.
 
 ---
 
@@ -1852,7 +2310,8 @@ Flow begins in tenant A but callback is completed while browser is authenticated
 
 Mitigation:
 
-Tenant is cryptographically bound to OAuth state.
+Lens stores a server-side tenant and pending-connection binding keyed by the hash of
+the upstream one-time state.
 
 ---
 
@@ -1866,13 +2325,26 @@ Every tenant-derived cache key includes tenant ID.
 
 ---
 
-## Threat: ciphertext reassignment
+## Threat: split authority or runtime state across replicas
 
-Bug attaches tenant A credential ciphertext to tenant B connection.
+Two strict Node replicas use different local Lens or upstream SQLite files, or local
+transit-file directories.
 
 Mitigation:
 
-Tenant-bound encryption AAD where supported.
+Strict hosted Node startup requires PostgreSQL for both Lens and upstream runtime
+state and S3 for transit files. Workers use shared D1 and KV or R2.
+
+---
+
+## Threat: Lens ciphertext reassignment
+
+Bug attaches tenant A approval ciphertext to tenant B approval.
+
+Mitigation:
+
+The decrypted envelope's tenant, connection authority, and approval ID must match the
+row before input is read. AAD enforces the same binding when supported.
 
 ---
 
@@ -1974,7 +2446,7 @@ RFC 0002 therefore provides the tenant persistence model required by RFC 0003.
 
 Although billing remains out of scope, hosted deployments need protection from one customer exhausting shared infrastructure.
 
-RFC 0002 SHOULD make tenant identity available to future controls for:
+RFC 0002 MUST make tenant identity available to future controls for:
 
 - concurrent run limits;
 - connection count limits;
@@ -1990,82 +2462,289 @@ Exact quotas may be implemented separately.
 
 # Rollout
 
-Ship in four phases.
+Implement as a sequence of small PRs. Each PR has one owner, one security boundary,
+and a narrow file set. Do not combine an upstream synchronization with feature work.
 
 ---
 
-## Phase 1 — Storage isolation
+## Preparation — RFC and upstream baseline
 
-Implement:
+Use two non-feature PRs:
 
-- `tenant_id` schema migration;
-- composite uniqueness;
-- tenant-prefixed indexes;
-- tenant-scoped store interfaces;
-- SQLite implementation;
-- D1 implementation;
-- legacy default tenant;
-- store isolation tests.
+1. PR 0A lands only the RFC 0002 and RFC 0004 updates;
+2. PR 0B uses `.github/workflows/sync-upstream.yml` to merge `upstream/main` through
+   the long-lived fork `upstream` branch without feature work;
+3. record the resulting seam audit and commit as the implementation baseline;
+4. branch PR 1 from that synchronized fork `main`.
 
-No authentication behavior changes yet.
+Acceptance:
 
-Goal:
-
-> Tenant boundaries exist in persistence and cannot be accidentally omitted by normal store consumers.
-
----
-
-## Phase 2 — Authentication and authorization plumbing
-
-Implement:
-
-- verified JWT claim return;
-- tenant resolution;
-- runtime-token tenant binding;
-- `TenantContext`;
-- strict/legacy modes;
-- RFC 0001 authorization integration;
-- tenant-aware error semantics.
-
-Goal:
-
-> Every data-plane request enters the runtime with one immutable tenant identity.
+- fork `main` contains the chosen upstream baseline;
+- the sync workflow detects upstream-only commits with
+  `git diff --quiet origin/main...upstream`, not a two-dot tree comparison that sees
+  fork-only commits as upstream changes;
+- `grep -rn "lens-seam" src/ AGENTS.md` matches RFC 0004;
+- `npm run fix-check` and `npm test` pass.
 
 ---
 
-## Phase 3 — Lifecycle propagation
+## PR 1 — Lens migrations and shared storage
 
-Implement tenant binding for:
+Scope is only `src/lens/` and its tests:
 
-- OAuth state;
-- authorization decisions;
-- approvals;
-- execution grants;
-- usage reservations;
-- run logs;
-- retries;
-- asynchronous workers.
+- add the versioned Lens migration runner and `lens_schema_migrations`;
+- add tenant columns to existing `lens_` tables;
+- add token, connection, OAuth, run, transit-file, and control-evidence tables;
+- add SQLite, D1, and PostgreSQL migration serialization;
+- keep SQLite and D1 behavior equivalent;
+- add the PostgreSQL Lens adapter selected by `LENS_DATABASE_URL`;
+- define the strict hosted Node storage prerequisite that refuses local Lens storage,
+  upstream SQLite, or local transit files.
 
-Audit tenant-sensitive caches.
+Acceptance:
 
-Goal:
-
-> Tenant scope survives every execution state transition.
+- fresh install and upgrade-from-current-schema pass on SQLite, D1, and PostgreSQL;
+- migrations are idempotent and fail closed;
+- a concurrent migration race produces one verified schema version;
+- concurrent inserts cannot create duplicate public aliases or duplicate upstream
+  bindings;
+- strict hosted Node storage validation requires `LENS_DATABASE_URL`,
+  `OOMOL_CONNECT_DATABASE_URL`, and `OOMOL_CONNECT_TRANSIT_FILE_BACKEND=s3`;
+- no upstream table or migration file changes.
 
 ---
 
-## Phase 4 — Operator plane
+## PR 2 — Tenant context and scoped Lens stores
 
-Implement:
+Scope is only `src/lens/` and its tests:
 
-- separate operator tenant access;
-- console tenant selector;
-- operator authorization evidence;
-- strict-mode readiness tooling.
+- add immutable `TenantContext` and `LensStore.forTenant`;
+- add scoped stores for token, principal, policy, connection, decision, approval,
+  reservation, run, OAuth, and transit-file bindings;
+- keep cross-tenant enumeration only on `LensOperatorStore`;
+- make scoped lookups return `not_found` for foreign IDs.
 
-Goal:
+Acceptance:
 
-> Multi-tenant operations are possible without weakening the data-plane boundary.
+- the same public alias works in two tenants;
+- every foreign ID test returns `not_found`;
+- no tenant-scoped method accepts a replacement tenant ID;
+- ordinary Lens runtime code has no unscoped customer-data store.
+
+---
+
+## PR 3 — Lens authentication and token binding
+
+Scope is Lens-owned authentication code and Lens routes:
+
+- verify tenant-user and operator JWTs with distinct audiences;
+- enforce the fixed route scope vocabulary;
+- resolve stored runtime-token bindings from `lens_token_tenants`;
+- require tenant-matching principal mappings for strict runtime tokens;
+- reject credential-class confusion before dispatch;
+- implement `legacy` and `strict` modes;
+- add fail-closed token creation and orphan handling.
+
+Acceptance:
+
+- headers, query strings, request bodies, MCP arguments, and action input cannot select
+  a tenant;
+- missing or empty `sub`, missing or expired `exp`, an audience array, the wrong
+  audience, and a token containing both Lens audiences are rejected;
+- control evidence uses the verified JWT `sub` as its actor subject;
+- an unbound token fails in strict mode;
+- tenant-user JWTs cannot execute and runtime tokens cannot resolve approvals;
+- contradictory token, principal, or policy bindings fail before connection lookup;
+- upstream `RuntimeJwtVerifier` and auth middleware remain unchanged.
+
+---
+
+## PR 4 — Strict application gateway
+
+Scope:
+
+- add `lens.wrapApp(app)` under `src/lens/`;
+- move `/lens/*` registration into the outer app before upstream middleware;
+- remove the inner `lens.registerRoutes(app)` entrypoint seams;
+- pass the shared catalog, provider loader, database, transit service, policy, and codec
+  through the existing installation seams;
+- add the marked wrapper seam to Node and Cloudflare and graceful Lens close to Node;
+- implement the exact method-aware raw-route allowlist in strict mode and deny every
+  other current or future upstream route;
+- pass existing behavior through in legacy mode;
+- intercept the existing OAuth callback only for a pending Lens flow.
+
+Acceptance:
+
+- each documented safe `GET` route is allowed, while a state-changing method on the
+  same path is denied;
+- every known raw bypass, unknown future route, encoded-separator, duplicate-slash,
+  case, and unowned trailing-slash variant is denied before upstream dispatch;
+- Lens tenant and operator namespaces remain reachable with correct authentication;
+- upstream admin middleware is never invoked for a strict Lens route;
+- legacy regression tests remain unchanged;
+- the seam registry and seam grep are updated in the same PR.
+
+---
+
+## PR 5 — Tenant connection lifecycle
+
+Scope is Lens routes and services:
+
+- create, list, read, rename, and delete tenant connection bindings;
+- generate opaque upstream names with the existing cryptographic random utility;
+- translate public names only inside the scoped Lens service;
+- expose credentialless providers as tenant-local catalog-derived virtual connections;
+- make deletion update the binding and upstream connection without exposing partial
+  state.
+
+Acceptance:
+
+- two tenants can create `gmail/primary` concurrently;
+- neither tenant can discover the other's binding, upstream name, ID, or credential;
+- an upstream write followed by a Lens write failure produces an unreachable orphan;
+- deleted public names may be reused without reactivating the tombstone;
+- no upstream connection service or schema changes.
+
+---
+
+## PR 6 — Tenant OAuth lifecycle
+
+Scope is the Lens OAuth service and strict callback handling:
+
+- create the pending connection binding before authorization;
+- store only the SHA-256 hash of upstream one-time state in Lens;
+- bind callback completion to the pending tenant and binding;
+- atomically activate once and expire or clean failed pending flows.
+
+Acceptance:
+
+- changing browser tenant or credentials before callback cannot move the connection;
+- swapped, replayed, expired, and unknown states cannot activate a binding;
+- an upstream completion followed by Lens failure stays unreachable;
+- existing upstream OAuth tests and wire shape remain unchanged.
+
+---
+
+## PR 7 — Actions, MCP, and provider proxy
+
+Scope reuses exported upstream execution services behind the strict Lens gateway:
+
+- expose tenant action execution under `/lens/v1/actions/*`;
+- expose tenant MCP under `/lens/mcp`;
+- expose tenant provider proxy under `/lens/v1/proxy/*`;
+- assemble existing `ConnectionService`, `ActionRunner`, `ProxyRunner`, and MCP with
+  tenant-scoped connection and transit adapters;
+- refactor Lens authorization to accept the scoped runner explicitly instead of
+  retaining a mutable inner runner;
+- namespace idempotency keys by tenant, token, and immutable connection authority;
+- present Lens binding IDs through `TenantConnectionStore` while mapping upstream
+  connection names and IDs internally;
+- translate upstream token connection grants back to active same-tenant Lens binding
+  IDs before policy construction;
+- resolve or verify the connection authority before provider loading;
+- persist tenant decision and run bindings around execution.
+
+Acceptance:
+
+- REST, MCP, and proxy paths enforce the same tenant and connection authority;
+- foreign aliases and IDs cause no provider call;
+- the same idempotency key is independent across tenants and conflicting within one;
+- runtime-token MCP reads expose only that token's connections, approvals, and runs;
+- operator policy writes map Lens IDs to upstream IDs and reads map them back without
+  exposing internals;
+- any unmapped member of a non-empty upstream connection allowlist fails policy
+  resolution closed and never becomes an unrestricted empty list;
+- concurrent tenants cannot swap runner, connection, transit, or authorization context;
+- retries reuse stored tenant and binding authority;
+- no new action-runner seam is added.
+
+---
+
+## PR 8 — Approvals, runs, evidence, and transit files
+
+Scope is Lens-owned lifecycle services and routes:
+
+- persist tenant and immutable connection authority on decisions, approvals,
+  reservations, and run bindings;
+- encrypt and verify the tenant-bound approval envelope;
+- revalidate the active binding before approval execution and async resume;
+- tenant-scope run and evidence reads through Lens-to-upstream run mappings;
+- tenant-scope upload, read, delete, expiry, and action file resolution through transit
+  bindings.
+
+Acceptance:
+
+- foreign approval, run, evidence, grant, reservation, and file IDs return `not_found`;
+- delayed approval and retry execution cannot change tenant or connection authority;
+- foreign files never reach an action executor;
+- provider-generated files return only Lens IDs and Lens download URLs;
+- a simulated run-binding write failure leaves the upstream run hidden and readiness
+  never attaches it to a decision by token or time heuristics;
+- cache keys include tenant ID for all customer-derived state.
+
+---
+
+## PR 9 — Operator plane and readiness tooling
+
+Scope:
+
+- add the required `/lens/operator/*` inspection, token, OAuth-config, and runtime-policy
+  routes;
+- require operator-audience JWT authentication and `lens.operator` scope;
+- write tenant- or deployment-scoped operator evidence as required by the route;
+- add strict-mode readiness checks for unbound tokens, connections, pending OAuth
+  flows, local Lens or upstream runtime storage, local transit files, and legacy Lens
+  rows;
+- add the console tenant selector only after the operator API is complete.
+
+Acceptance:
+
+- tenant credentials cannot call operator routes;
+- token creation writes upstream token, tenant binding, and principal mapping before
+  returning the secret;
+- every operator route has an explicit tenant or fixed deployment scope and is
+  audited with the verified JWT `sub`;
+- strict hosted Node readiness requires shared Lens PostgreSQL, upstream PostgreSQL,
+  and S3 transit storage;
+- readiness fails closed when strict-mode prerequisites are missing;
+- the data plane cannot impersonate a selected tenant.
+
+---
+
+## Per-PR merge discipline
+
+Before merging each code PR:
+
+1. fetch `upstream/main` and compare it with fork `main`;
+2. if upstream advanced, dispatch or wait for the sync workflow and land its sync-only
+   PR on fork `main` first;
+3. merge the refreshed fork `main` into the feature branch and resolve only marked
+   seams if conflicts occur;
+4. inspect `git diff --stat upstream/main...HEAD` for unexpected upstream-owned files;
+5. run `npm run fix-check` and `npm test`;
+6. run the targeted SQLite, D1, and PostgreSQL tenancy tests added by that PR;
+7. run `grep -rn "lens-seam" src/ AGENTS.md` and compare it with RFC 0004.
+
+If an implementation needs another upstream-file edit, stop and update RFC 0004 with
+the reason and seam budget before writing the code.
+
+---
+
+## Deployment sequence
+
+1. deploy the migrations while still in legacy mode and take a database backup;
+2. configure shared Lens PostgreSQL, upstream PostgreSQL, S3 transit storage, and the
+   tenant and operator JWT audiences;
+3. bind one existing tenant's tokens, principals, connections, and Lens records;
+4. require a clean operator readiness report for that tenant;
+5. enable strict mode in staging and run the complete isolation and raw-bypass suite;
+6. enable strict mode for one production tenant and monitor denials, orphan cleanup,
+   callback failures, and database consistency;
+7. admit a second production tenant only after the first tenant is clean;
+8. after a second tenant is admitted, never roll back to legacy mode on that shared
+   deployment. Roll back by stopping tenant traffic or restoring a strict-compatible
+   build and database backup.
 
 ---
 
@@ -2089,10 +2768,11 @@ Tenant B
 
 Verify each tenant sees exactly one connection.
 
-Test both:
+Test all supported Lens stores:
 
 - SQLite;
-- D1.
+- D1;
+- PostgreSQL.
 
 ---
 
@@ -2122,22 +2802,45 @@ null / not_found
 
 ## Alias isolation test
 
-Same alias in multiple tenants must not conflict.
+Same alias in multiple tenants must not conflict, including concurrent creation.
+
+Each binding must receive a different opaque upstream name.
 
 ---
 
-## Token mismatch test
+## No-auth provider test
 
-JWT:
+Two tenants see the same credentialless provider as their own virtual `default`
+connection without a Lens binding. Its decision and run evidence still carry the
+calling tenant, and it cannot expose customer state.
+
+---
+
+## Credential-class isolation test
+
+Verify all of the following fail before dispatch:
 
 ```text
-tenant A
+tenant-user JWT → /lens/v1/actions/*
+tenant-user JWT → /lens/mcp
+runtime token → approval resolution
+tenant-user JWT → /lens/operator/*
+operator JWT → tenant data-plane route
 ```
 
-runtime token:
+For both Lens JWT classes, also reject missing or empty `sub`, missing or expired
+`exp`, an `aud` array, the other audience, and a token containing both audiences.
+Successful control evidence must use the verified `sub` as `actor_subject`.
+
+---
+
+## Binding mismatch test
+
+Persist contradictory trusted rows:
 
 ```text
-tenant B
+token tenant = A
+principal tenant = B
 ```
 
 Expected:
@@ -2150,6 +2853,14 @@ No connection lookup occurs.
 
 ---
 
+## Scope test
+
+A valid tenant-user JWT with `lens.connections.read` may list connections but may not
+write connections, start OAuth, resolve approvals, or read audit history. Each added
+scope enables only its documented route class.
+
+---
+
 ## Strict-mode test
 
 No tenant claim/token binding.
@@ -2158,6 +2869,32 @@ Expected:
 
 ```text
 401 tenant_required
+```
+
+No Lens database binding, local `lens.sqlite`, upstream SQLite, local transit files on
+strict hosted Node, missing JWT configuration, equal tenant/operator audiences, an
+unencrypted secret codec, or `LENS_DISABLED=1`.
+
+Expected:
+
+```text
+startup failure
+```
+
+---
+
+## Raw gateway test
+
+In strict mode, call every documented safe raw `GET` route and verify it dispatches.
+Call a state-changing method on the same path, including POST
+`/v1/actions/:actionId`, plus each raw upstream action, MCP, proxy, connection,
+OAuth-start, run, and file path. Also test an unknown future `/v1` and `/api` route,
+encoded separators, duplicate slashes, case changes, and trailing-slash variants.
+
+Expected for every request outside the allowlist:
+
+```text
+denied before upstream dispatch
 ```
 
 ---
@@ -2179,9 +2916,10 @@ Existing tests continue to pass.
 ## OAuth flow test
 
 1. start OAuth under tenant A;
-2. complete provider callback;
-3. switch browser/session context to tenant B before callback if possible;
-4. connection must still be written under tenant A.
+2. capture a second state under tenant B;
+3. swap states, replay a state, and switch browser/session context before callback;
+4. only the exact pending binding may activate once;
+5. no failed flow can expose its upstream credential.
 
 ---
 
@@ -2198,7 +2936,8 @@ Existing tests continue to pass.
 
 Create grant under tenant A.
 
-Attempt consumption under tenant B.
+Attempt consumption under tenant B. Separately alter only the stored immutable
+connection-binding ID, then replace it with the `no_auth:<service>` sentinel.
 
 Expected:
 
@@ -2214,7 +2953,12 @@ with no provider call.
 
 Create runs for both tenants.
 
-Tenant A list endpoint returns only A.
+A tenant-user JWT for A with `lens.audit.read` returns only A. A runtime token's MCP
+run lookup returns only runs created by that token.
+
+Simulate a successful upstream run followed by a Lens run-binding write failure. The
+run remains hidden, readiness reports an orphan candidate, and no repair attaches it
+to a decision by token or timestamp.
 
 ---
 
@@ -2250,6 +2994,15 @@ Test positive and negative caching.
 
 ---
 
+## Idempotency isolation test
+
+Use the same caller idempotency key for different tenants, tokens, and connection
+bindings. Different authority tuples execute independently. Reuse with changed input
+inside one tuple returns a conflict, and replay with the same input returns only that
+tuple's stored response.
+
+---
+
 ## Async resume test
 
 1. tenant A action enters pending approval;
@@ -2270,6 +3023,32 @@ Verify tenant isolation across:
 - approval resume;
 - retries.
 
+Use the same foreign binding ID on every path and assert that no provider call occurs.
+
+---
+
+## Transit-file isolation test
+
+1. upload a file under tenant B;
+2. try to read, delete, and use its Lens file ID in an action under tenant A;
+3. each operation returns `not_found` and the action executor is not called;
+4. tenant B can still read, delete, or use the file normally;
+5. an action-generated file returns a Lens ID and `/lens/api/files` URL, never an
+   upstream ID or raw URL.
+
+---
+
+## Migration parity test
+
+For SQLite, D1, and PostgreSQL:
+
+1. bootstrap a fresh Lens database;
+2. upgrade a database with the current RFC 0001 tables and data;
+3. run migrations twice;
+4. race two migration runners;
+5. verify one schema version, backfilled legacy tenant, constraints, and data
+   preservation.
+
 ---
 
 ## Operator-plane test
@@ -2277,14 +3056,19 @@ Verify tenant isolation across:
 Normal tenant authentication:
 
 ```text
-GET /api/operator/...
+GET /lens/operator/...
 ```
 
 must fail.
 
 Operator authentication may explicitly inspect tenant A and tenant B.
 
-Each access produces operator authorization evidence.
+Each access produces tenant-scoped operator authorization evidence using the verified
+JWT `sub`. Tenant enumeration and global OAuth-config and runtime-policy access each
+produce deployment-scoped evidence with `tenant_id = NULL`.
+
+Token creation failure at any Lens binding step revokes or leaves an unusable upstream
+token and never returns its plaintext secret.
 
 ---
 
@@ -2327,6 +3111,7 @@ All tenancy tests run against:
 ```text
 SQLite
 D1
+PostgreSQL
 ```
 
 ---
@@ -2422,11 +3207,12 @@ Identity must not collapse into tenancy.
 
 ---
 
-## Global aliases with tenant filtering afterward
+## Exposed global aliases with tenant filtering afterward
 
 Rejected.
 
-Tenant must be part of alias uniqueness and lookup semantics.
+Tenant must be part of public-name uniqueness and lookup semantics. Globally unique
+upstream names remain an internal implementation detail behind the Lens binding.
 
 ---
 
@@ -2435,7 +3221,7 @@ Tenant must be part of alias uniqueness and lookup semantics.
 Example:
 
 ```text
-/api/connections?tenantId=acct_B
+/lens/api/connections?tenantId=acct_B
 ```
 
 Rejected.
@@ -2446,17 +3232,15 @@ Cross-tenant access deserves explicit privileged APIs.
 
 ---
 
-# Open questions
+# Resolved decisions and deferred work
 
 ## 1. Should strict mode eventually become the default?
 
-Recommendation:
+Decision:
 
-Yes for new hosted deployments.
-
-Keep legacy mode for self-hosted/single-tenant compatibility.
-
-Do not silently change existing installations.
+Keep `legacy` as the default for existing and self-hosted single-tenant deployments.
+New hosted deployments set `strict` explicitly, and any deployment with more than one
+tenant must use it. Do not silently change existing installations.
 
 ---
 
@@ -2472,7 +3256,7 @@ A future tenant registry could enable:
 - region;
 - encryption-key assignment.
 
-Recommendation:
+Decision:
 
 Do not block RFC 0002 on a registry.
 
@@ -2500,9 +3284,9 @@ to mean global.
 
 ## 4. Should tenant-level usage limits ship immediately?
 
-Recommendation:
+Decision:
 
-Tenant identity should be added to the usage-reservation model now.
+Tenant identity should be added to the Lens usage-reservation model now.
 
 Actual tenant-wide authorization limits may ship after core isolation if schedule requires.
 
@@ -2530,7 +3314,7 @@ without changing application-level tenant ownership.
 
 Tenant lifecycle is out of scope because Lens does not yet maintain a tenant registry.
 
-Future behavior should likely be:
+The future registry design must define:
 
 ```text
 deny new execution
@@ -2538,7 +3322,7 @@ deny OAuth creation
 allow authorized operator export/recovery
 ```
 
-but this requires a separate lifecycle design.
+Suspension is not inferred from missing rows or JWT failure in RFC 0002.
 
 ---
 
@@ -2558,15 +3342,11 @@ Multiple human users and roles inside a tenant.
 
 ---
 
-### Tenant-scoped approval roles
+### Application-specific tenant roles
 
-Examples:
-
-```text
-approval.viewer
-approval.resolver
-approval.admin
-```
+The fixed JWT scopes in this RFC remain the Lens authorization boundary. A future
+membership system may map product roles onto those scopes without changing Lens route
+semantics.
 
 ---
 
@@ -2609,9 +3389,22 @@ Complete lifecycle controls.
 
 ---
 
-# Success criteria
+# Specification completion
 
-RFC 0002 is complete when the runtime can safely support:
+The RFC 0002 design is accepted and implementation-ready. All required v1 identity,
+route, storage, OAuth, connection, execution, file, operator, migration, test, merge,
+and deployment decisions are defined above. Items under Future work are explicitly
+non-blocking and require separate RFCs.
+
+Runtime implementation is not claimed by this document. It is complete only after PR
+1 through PR 9 satisfy their acceptance gates and the verification matrix passes on
+SQLite, D1, and PostgreSQL.
+
+---
+
+# Implementation success criteria
+
+The RFC 0002 runtime implementation is complete when it can safely support:
 
 ```text
 Tenant A

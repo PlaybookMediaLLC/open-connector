@@ -65,8 +65,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # No delta against main: nothing to open.
-          if git diff --quiet origin/main upstream; then
+          # No head-side delta against the merge base: nothing to open. A
+          # two-dot tree diff is wrong here because main normally contains
+          # fork commits that the long-lived upstream branch does not.
+          if git diff --quiet origin/main...upstream; then
             echo "upstream branch matches main; no PR needed."
             exit 0
           fi
@@ -79,8 +81,11 @@ jobs:
           # GH_TOKEN and the checkout token for a PAT secret if the sync PR
           # must run CI automatically; until then, close and reopen the PR
           # (or push to it) to start checks.
-          gh pr create \
-            --base main \
-            --head upstream \
-            --title "chore: sync upstream $(date -u +%F)" \
-            --body "Nightly merge of oomol-lab/open-connector main into the upstream branch. Review the diff, then merge."
+          # REST, not "gh pr create": the GraphQL createPullRequest mutation
+          # rejects the Actions token with "Resource not accessible by
+          # integration" even with pull-requests: write granted.
+          gh api "repos/${GITHUB_REPOSITORY}/pulls" \
+            -f base=main \
+            -f head=upstream \
+            -f title="chore: sync upstream $(date -u +%F)" \
+            -f body="Nightly merge of oomol-lab/open-connector main into the upstream branch. Review the diff, then merge."
