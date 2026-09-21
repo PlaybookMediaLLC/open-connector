@@ -1,11 +1,14 @@
-import type { RuntimeActionDefinition } from "../../catalog-store.ts";
-import type { ConnectionError, ConnectionSummary } from "../../connection-service.ts";
-import type { ExecutionResult, ProviderDefinition } from "../../core/types.ts";
+import type { RuntimeActionDefinition, RuntimeProviderDefinition } from "../../catalog-store.ts";
+import type { ConnectionError, ConnectionSummary, ManagedConnectionSummary } from "../../connection-service.ts";
+import type { ProviderAuthSetup } from "../../core/provider-setup.ts";
+import type { ExecutionResult, ProviderScenario } from "../../core/types.ts";
+import type { OAuthClientConfigSummary } from "../../oauth/oauth-client-config-service.ts";
 import type { Context } from "hono";
 
-import { requiredRecord } from "../../core/cast.ts";
+import { optionalInteger, optionalRecord, requiredRecord } from "../../core/cast.ts";
+import { describeProviderAuth } from "../../core/provider-setup.ts";
 
-type RuntimeStatus = 400 | 401 | 403 | 404 | 409 | 413 | 429 | 500 | 501;
+type RuntimeStatus = 400 | 401 | 402 | 403 | 404 | 409 | 413 | 429 | 500 | 501;
 
 export type RuntimeResponseMeta = Record<string, unknown>;
 
@@ -30,6 +33,7 @@ export interface RuntimeProviderMetadata {
   iconUrl: string | null;
   homepageUrl: string | null;
   categories: RuntimeProviderCategory[];
+  scenario: ProviderScenario;
   authTypes: string[];
 }
 
@@ -51,6 +55,7 @@ export interface RuntimeActionMetadata {
   service: string;
   name: string;
   description: string;
+  operationType: RuntimeActionDefinition["operationType"];
   requiredScopes: string[];
   providerPermissions: string[];
   inputSchema: RuntimeActionDefinition["inputSchema"];
@@ -70,6 +75,7 @@ export interface RuntimeConnectedApp {
   accountLabel: string;
   isDefault: boolean;
   scopes: string[];
+  marketplace?: ConnectionSummary["marketplace"];
 }
 
 export interface RuntimeFailureInput {
@@ -92,7 +98,7 @@ export type RuntimeActionHttpResult =
   | { status: 200; body: RuntimeSuccessEnvelope<unknown> }
   | { status: RuntimeStatus; body: RuntimeFailureEnvelope };
 
-export function serializeRuntimeProvider(provider: ProviderDefinition): RuntimeProviderMetadata {
+export function serializeRuntimeProvider(provider: RuntimeProviderDefinition): RuntimeProviderMetadata {
   return {
     service: provider.service,
     displayName: provider.displayName,
@@ -102,6 +108,7 @@ export function serializeRuntimeProvider(provider: ProviderDefinition): RuntimeP
       id: category,
       displayName: category,
     })),
+    scenario: provider.scenario,
     authTypes: provider.authTypes,
   };
 }
@@ -116,6 +123,7 @@ export function serializeRuntimeAction(action: RuntimeActionDefinition): Runtime
     service: action.service,
     name: action.name,
     description: action.description,
+    operationType: action.operationType,
     requiredScopes: action.requiredScopes,
     providerPermissions: action.providerPermissions,
     inputSchema: action.inputSchema,
@@ -139,6 +147,7 @@ export function serializeRuntimeConnectedApp(connection: ConnectionSummary): Run
     accountLabel: connection.profile.displayName,
     isDefault: connection.default,
     scopes: connection.profile.grantedScopes,
+    marketplace: connection.marketplace,
   };
 }
 
@@ -164,6 +173,15 @@ export function unknownActionFailure(actionId: string): RuntimeFailureInput {
     errorCode: "unknown_action",
     message: `Unknown action: ${actionId}`,
     meta: { actionId },
+  };
+}
+
+export function unknownServiceFailure(service: string): RuntimeFailureInput {
+  return {
+    status: 404,
+    errorCode: "unknown_service",
+    message: `Unknown service: ${service}.`,
+    meta: { service },
   };
 }
 
@@ -197,7 +215,7 @@ export function serializeRuntimeActionResult(input: RuntimeActionResultInput): R
   }
 
   return serializeRuntimeFailure({
-    status: mapExecutionErrorStatus(result.error?.code),
+    status: mapExecutionErrorStatus(result.error?.code, result.error?.details),
     errorCode: result.error?.code ?? "provider_error",
     message: result.error?.message ?? "Action execution failed.",
     data: result.error?.details ?? null,
@@ -242,7 +260,31 @@ export function mapConnectionErrorStatus(error: ConnectionError): 400 | 404 | 40
   return 400;
 }
 
-function mapExecutionErrorStatus(code: string | undefined): RuntimeStatus {
+/**
+ * The error codes a provider may put in `ProviderRequestError`'s `code`
+ * argument. Every other code `mapExecutionErrorStatus` knows is raised by the
+ * connection, policy or dispatch layer, and a provider that borrowed one would
+ * answer with a status that has nothing to do with what its upstream said.
+ */
+export const providerErrorCodes: readonly string[] = [
+  "authorization_failed",
+  "insufficient_credit",
+  "invalid_input",
+  "provider_error",
+  "rate_limited",
+];
+
+function mapExecutionErrorStatus(code: string | undefined, details?: unknown): RuntimeStatus {
+  const upstreamStatus = optionalInteger(optionalRecord(details)?.status);
+  if (upstreamStatus === 413) {
+    return 413;
+  }
+  if (code === "insufficient_credit") {
+    return 402;
+  }
+  if (code === "invalid_input" && upstreamStatus === 404) {
+    return 404;
+  }
   if (code === "internal_error" || code === "provider_error" || code === "executor_unavailable") {
     return 500;
   }
@@ -265,6 +307,7 @@ function isRuntimeStatus(value: unknown): value is RuntimeStatus {
   return (
     value === 400 ||
     value === 401 ||
+    value === 402 ||
     value === 403 ||
     value === 404 ||
     value === 409 ||
@@ -273,4 +316,69 @@ function isRuntimeStatus(value: unknown): value is RuntimeStatus {
     value === 500 ||
     value === 501
   );
+}
+
+/** Management view adds stored account metadata without exposing credentials. */
+export function serializeManagedConnection(connection: ManagedConnectionSummary): Omit<
+  RuntimeConnectedApp,
+  "status"
+> & {
+  status: ManagedConnectionSummary["status"];
+  providerAccountId: string;
+  comment: string | null;
+} {
+  return {
+    ...serializeRuntimeConnectedApp(connection),
+    status: connection.status,
+    providerAccountId: connection.profile.accountId,
+    comment: connection.comment,
+  };
+}
+
+export function connectionManagementFailure(error: { code: string; message: string }): RuntimeFailureInput {
+  const errorCode =
+    error.code === "connection_not_found"
+      ? "app_not_found"
+      : error.code === "unknown_service" || error.code === "unsupported_auth_type"
+        ? "invalid_input"
+        : error.code === "connection_changed"
+          ? "request_key_conflict"
+          : error.code;
+  return {
+    status: errorCode === "app_not_found" ? 404 : errorCode === "request_key_conflict" ? 409 : 400,
+    errorCode,
+    message: error.message,
+  };
+}
+
+/** Setup requirements and installation state, without provider protocol details or saved credentials. */
+export interface RuntimeProviderSetup {
+  service: string;
+  auth: ProviderAuthSetup[];
+  oauthClient?: RuntimeOAuthClientSetup;
+}
+
+interface RuntimeOAuthClientSetup {
+  configured: boolean;
+  customClientAvailable: boolean;
+  expectedRedirectUri: string;
+  missingFields: string[];
+}
+
+export function serializeRuntimeProviderSetup(
+  provider: RuntimeProviderDefinition,
+  oauth?: OAuthClientConfigSummary,
+): RuntimeProviderSetup {
+  return {
+    service: provider.service,
+    auth: provider.auth.map(describeProviderAuth),
+    oauthClient: oauth
+      ? {
+          configured: oauth.configured,
+          customClientAvailable: oauth.customClientAvailable,
+          expectedRedirectUri: oauth.expectedRedirectUri,
+          missingFields: oauth.missingFields,
+        }
+      : undefined,
+  };
 }

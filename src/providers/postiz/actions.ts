@@ -59,6 +59,7 @@ export const postizActions: readonly ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "list_integrations",
     description: "List connected social-media channels, optionally limited to one Postiz group.",
+    operationType: "read",
     requiredScopes: [],
     inputSchema: s.object("Filters for Postiz integrations.", { group: idSchema }, { optional: ["group"] }),
     outputSchema: s.array("Connected social-media channels.", rawObjectSchema("Postiz integration.")),
@@ -66,6 +67,7 @@ export const postizActions: readonly ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "list_groups",
     description: "List Postiz groups (customers) available to the API key.",
+    operationType: "read",
     requiredScopes: [],
     inputSchema: s.object("No input is required.", {}),
     outputSchema: s.array("Postiz groups.", rawObjectSchema("Postiz group.")),
@@ -73,6 +75,7 @@ export const postizActions: readonly ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "get_integration_settings",
     description: "Get the platform-specific settings schema for a connected social channel.",
+    operationType: "read",
     requiredScopes: [],
     inputSchema: s.object(
       "Input for reading integration settings.",
@@ -84,6 +87,7 @@ export const postizActions: readonly ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "find_next_slot",
     description: "Get the next available publishing time for a connected social channel.",
+    operationType: "read",
     requiredScopes: [],
     inputSchema: s.object(
       "Input for finding a publishing slot.",
@@ -97,6 +101,7 @@ export const postizActions: readonly ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "list_posts",
     description: "List Postiz posts in a UTC date range.",
+    operationType: "read",
     requiredScopes: [],
     inputSchema: s.object(
       "Filters for listing posts.",
@@ -114,6 +119,7 @@ export const postizActions: readonly ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "create_post",
     description: "Create, schedule, publish, or save a Postiz post as a draft.",
+    operationType: "write",
     requiredScopes: [],
     inputSchema: postCreationSchema,
     outputSchema: s.array("Created Postiz post records.", rawObjectSchema("Created post record.")),
@@ -121,6 +127,7 @@ export const postizActions: readonly ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "delete_post",
     description: "Delete a Postiz post and its related group posts.",
+    operationType: "destructive",
     requiredScopes: [],
     inputSchema: s.object("Input for deleting a post.", { id: idSchema }, { required: ["id"] }),
     outputSchema: s.object("Deleted Postiz post.", { id: idSchema }),
@@ -128,6 +135,7 @@ export const postizActions: readonly ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "update_post_status",
     description: "Move a Postiz post between draft and scheduled state without changing its date.",
+    operationType: "write",
     requiredScopes: [],
     inputSchema: s.object(
       "Input for changing post status.",
@@ -142,6 +150,7 @@ export const postizActions: readonly ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "upload_file",
     description: "Upload a local transit file to Postiz for use in a post.",
+    operationType: "write",
     requiredScopes: [],
     inputSchema: s.object("Input for uploading a file.", { file: s.transitFile() }, { required: ["file"] }),
     outputSchema: mediaSchema,
@@ -149,6 +158,7 @@ export const postizActions: readonly ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "upload_from_url",
     description: "Import a publicly reachable media file into Postiz.",
+    operationType: "write",
     requiredScopes: [],
     inputSchema: s.object(
       "Input for importing a media file.",
@@ -160,6 +170,7 @@ export const postizActions: readonly ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "get_integration_analytics",
     description: "Get analytics for a connected social channel over a number of days.",
+    operationType: "read",
     requiredScopes: [],
     inputSchema: s.object(
       "Input for integration analytics.",
@@ -171,6 +182,7 @@ export const postizActions: readonly ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "get_post_analytics",
     description: "Get analytics for one published Postiz post over a number of days.",
+    operationType: "read",
     requiredScopes: [],
     inputSchema: s.object(
       "Input for post analytics.",

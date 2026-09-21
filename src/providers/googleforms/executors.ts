@@ -1,4 +1,4 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { OAuthProviderContext } from "../provider-runtime.ts";
 
@@ -10,8 +10,10 @@ import {
   optionalRecord,
   optionalString,
 } from "../../core/cast.ts";
+import { defineGoogleProviderExecutors, googleBearerProxyAuth, googleServiceAccountValidator } from "../google-auth.ts";
 import { googleJsonRequest } from "../google-runtime.ts";
-import { defineOAuthProviderExecutors, ProviderRequestError } from "../provider-runtime.ts";
+import { defineProviderProxy, providerInputError, ProviderRequestError } from "../provider-runtime.ts";
+import { googleFormsOAuthScopes } from "./scopes.ts";
 
 export const googleFormsApiBaseUrl = "https://forms.googleapis.com/v1/forms";
 
@@ -87,7 +89,16 @@ export const googleFormsActionHandlers: ProviderActionHandlers<"googleforms", Go
   list_watches: listWatches,
 };
 
-export const executors: ProviderExecutors = defineOAuthProviderExecutors(service, googleFormsActionHandlers);
+export const executors: ProviderExecutors = defineGoogleProviderExecutors(service, googleFormsActionHandlers, {
+  scopes: googleFormsOAuthScopes,
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: googleFormsApiBaseUrl,
+  auth: googleBearerProxyAuth(googleFormsOAuthScopes),
+  skipDnsValidation: true,
+});
 
 export const credentialValidators: CredentialValidators = {
   async oauth2(input, { fetcher, signal }) {
@@ -110,6 +121,7 @@ export const credentialValidators: CredentialValidators = {
       },
     };
   },
+  customCredential: googleServiceAccountValidator(service, googleFormsOAuthScopes),
 };
 
 async function createForm(input: Record<string, unknown>, context: GoogleFormsRuntimeContext) {
@@ -179,7 +191,7 @@ async function getForm(input: Record<string, unknown>, context: GoogleFormsRunti
 
 async function batchUpdateForm(input: Record<string, unknown>, context: GoogleFormsRuntimeContext) {
   const formId = requireString(input.formId, "formId is required");
-  const requests = objectArray(input.requests, "requests", providerRequestError);
+  const requests = objectArray(input.requests, "requests", providerInputError);
   const includeFormInResponse = input.includeFormInResponse === true;
 
   const payload = await googleFormsJsonRequest<BatchUpdatePayload>(
@@ -520,8 +532,4 @@ function requireBoolean(value: unknown, message: string): boolean {
 function integerQuery(value: unknown): string | undefined {
   const integer = optionalInteger(value);
   return integer !== undefined ? String(integer) : undefined;
-}
-
-function providerRequestError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

@@ -5,17 +5,6 @@ import { defineProviderAction } from "../../core/provider-definition.ts";
 
 const service = "wps_mcp";
 
-export type WpsMcpActionName =
-  | "list_tools"
-  | "call_tool"
-  | "search_files"
-  | "list_my_files"
-  | "list_files"
-  | "get_file_info"
-  | "read_file"
-  | "create_file_with_content"
-  | "create_folder";
-
 const fileTypeSchema = s.stringEnum("The kind of file system entry to include.", ["file", "folder", "shortcut"]);
 
 const orderSchema = s.stringEnum("The result sort direction.", ["asc", "desc"]);
@@ -58,6 +47,7 @@ const mcpToolSummarySchema = s.object(
 export const wpsMcpActions: ActionDefinition[] = [
   defineProviderAction(service, {
     name: "search_files",
+    operationType: "read",
     description:
       "Search WPS cloud documents and folders across drives by file name, content, creator, location, type, or time.",
     requiredScopes: [],
@@ -141,6 +131,7 @@ export const wpsMcpActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "list_my_files",
+    operationType: "read",
     description:
       "List entries in the root of the connected user's WPS cloud documents with filtering, sorting, and pagination.",
     requiredScopes: [],
@@ -173,6 +164,7 @@ export const wpsMcpActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "list_files",
+    operationType: "read",
     description: "List entries in a known WPS drive folder with filtering, sorting, and pagination.",
     requiredScopes: [],
     inputSchema: s.object(
@@ -206,6 +198,7 @@ export const wpsMcpActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "get_file_info",
+    operationType: "read",
     description: "Get metadata, drive details, extended attributes, or permissions for a WPS file.",
     requiredScopes: [],
     inputSchema: {
@@ -227,6 +220,7 @@ export const wpsMcpActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "read_file",
+    operationType: "read",
     description:
       "Read a WPS cloud document as Markdown, plain text, structured KDC data, or spreadsheet cells according to its format.",
     requiredScopes: [],
@@ -273,6 +267,7 @@ export const wpsMcpActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "create_file_with_content",
+    operationType: "write",
     description: "Create a WPS document, PDF, spreadsheet, or smart sheet and populate it with JSON-friendly content.",
     requiredScopes: [],
     inputSchema: s.object(
@@ -310,6 +305,7 @@ export const wpsMcpActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "create_folder",
+    operationType: "write",
     description: "Create a folder in a known WPS drive and parent folder.",
     requiredScopes: [],
     inputSchema: s.object(
@@ -330,6 +326,7 @@ export const wpsMcpActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "list_tools",
+    operationType: "read",
     description:
       "Discover the current WPS document, spreadsheet, presentation, PDF, and workspace MCP tools with their live input schemas.",
     requiredScopes: [],
@@ -340,6 +337,7 @@ export const wpsMcpActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "call_tool",
+    operationType: "destructive",
     description:
       "Call a current WPS MCP tool with JSON arguments after checking its live schema and behavior annotations.",
     requiredScopes: [],
@@ -358,7 +356,3 @@ export const wpsMcpActions: ActionDefinition[] = [
     }),
   }),
 ];
-
-export const wpsMcpActionByName: Map<string, ActionDefinition> = new Map(
-  wpsMcpActions.map((action) => [action.name, action]),
-);

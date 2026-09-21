@@ -28,6 +28,7 @@ export const bufferActions: readonly ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "get_account",
     description: "Get the account associated with the Buffer API key.",
+    operationType: "read",
     requiredScopes: [],
     inputSchema: s.object("No input is required.", {}),
     outputSchema: s.object("Buffer account.", { id: idSchema, email: s.email("Account email address.") }),
@@ -35,6 +36,7 @@ export const bufferActions: readonly ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "list_organizations",
     description: "List Buffer organizations available to the authenticated account.",
+    operationType: "read",
     requiredScopes: [],
     inputSchema: s.object("No input is required.", {}),
     outputSchema: s.array("Buffer organizations.", rawObjectSchema("Buffer organization.")),
@@ -42,6 +44,7 @@ export const bufferActions: readonly ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "list_channels",
     description: "List connected social channels in a Buffer organization.",
+    operationType: "read",
     requiredScopes: [],
     inputSchema: s.object(
       "Input for listing channels.",
@@ -53,6 +56,7 @@ export const bufferActions: readonly ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "get_channel",
     description: "Get one Buffer social channel by ID.",
+    operationType: "read",
     requiredScopes: [],
     inputSchema: s.object("Input for reading a channel.", { channelId: idSchema }, { required: ["channelId"] }),
     outputSchema: s.object("Buffer channel.", {
@@ -67,6 +71,7 @@ export const bufferActions: readonly ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "list_posts",
     description: "List Buffer posts in an organization with cursor pagination.",
+    operationType: "read",
     requiredScopes: [],
     inputSchema: s.object(
       "Input for listing posts.",
@@ -82,6 +87,7 @@ export const bufferActions: readonly ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "get_post",
     description: "Get one Buffer post and its available metrics.",
+    operationType: "read",
     requiredScopes: [],
     inputSchema: s.object("Input for reading a post.", { postId: idSchema }, { required: ["postId"] }),
     outputSchema: rawObjectSchema("Buffer post."),
@@ -89,6 +95,7 @@ export const bufferActions: readonly ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "create_post",
     description: "Create a Buffer text or media post, optionally as a draft or scheduled post.",
+    operationType: "write",
     requiredScopes: [],
     inputSchema: s.object(
       "Input for creating a Buffer post.",

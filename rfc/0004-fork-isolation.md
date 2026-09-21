@@ -42,12 +42,13 @@ The strategy has three rules:
 A seam is a line in an upstream-owned file that mounts lens code. Keep seams rare, short,
 and marked. Current registry:
 
-| File                        | Seam                                                                                                                               |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `src/server/connect-app.ts` | `wrapActionRunner?` option; applied after `ActionRunner` construction                                                              |
-| `src/server/index.ts`       | import + `installLens(...)` + `lens.registerRoutes(app)` in the static-routes callback + `wrapActionRunner: lens.wrapActionRunner` |
-| `src/server/cloudflare.ts`  | import + `installLensWorker({ env, secretCodec })` + `wrapActionRunner` + `registerStaticRoutes: lens.registerRoutes`              |
-| `AGENTS.md`                 | one trailing note that points agents to `CLAUDE.md` (marked `<!-- lens-seam -->`)                                                  |
+| File                              | Seam                                                                                                 |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `src/server/connect-app.ts`       | `wrapActionRunner?` option; applied after `ActionRunner` construction                                |
+| `src/server/connector-runtime.ts` | generic runtime extension hook; passes shared dependencies and applies its routes and action wrapper |
+| `src/server/index.ts`             | lazy `installLens(...)` through the runtime extension hook                                           |
+| `src/server/cloudflare.ts`        | lazy `installLensWorker(...)` + `wrapActionRunner` + `registerStaticRoutes: lens.registerRoutes`     |
+| `AGENTS.md`                       | one trailing note that points agents to `CLAUDE.md` (marked `<!-- lens-seam -->`)                    |
 
 Every seam line ends with `// lens-seam` (or a `lens-seam:` doc comment). To audit:
 `grep -rn "lens-seam" src/ AGENTS.md`.
@@ -55,13 +56,14 @@ Every seam line ends with `// lens-seam` (or a `lens-seam:` doc comment). To aud
 The `wrapActionRunner` hook is deliberately generic. It is a candidate to propose upstream;
 if accepted, the `connect-app.ts` seam disappears.
 
-RFC 0002 changes seams only in the existing entrypoint seam files. Planned registry:
+RFC 0002 adapts the existing seams without adding another seam file. Planned registry:
 
-| File                        | RFC 0002 change                                                                                                               |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `src/server/connect-app.ts` | keep `wrapActionRunner`; no new seam                                                                                          |
-| `src/server/index.ts`       | pass shared runtime dependencies to `installLens`; remove inner Lens route registration; wrap the app; close Lens at shutdown |
-| `src/server/cloudflare.ts`  | pass shared runtime dependencies to `installLensWorker`; remove inner Lens route registration; return the wrapped app         |
+| File                              | RFC 0002 change                                                                                                               |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `src/server/connect-app.ts`       | keep `wrapActionRunner`; no new seam                                                                                          |
+| `src/server/connector-runtime.ts` | keep the generic runtime extension hook; no new seam                                                                          |
+| `src/server/index.ts`             | pass shared runtime dependencies to `installLens`; remove inner Lens route registration; wrap the app; close Lens at shutdown |
+| `src/server/cloudflare.ts`        | pass shared runtime dependencies to `installLensWorker`; remove inner Lens route registration; return the wrapped app         |
 
 The outer seam is:
 
@@ -105,8 +107,8 @@ origin/main...upstream`; a two-dot comparison is forbidden because fork-only Len
 2. Do not add Lens feature work to that synchronization PR. For a manual sync, use the
    same branch and merge workflow.
 3. `assets/star-history/*` conflicts keep the fork copy. Generated registry conflicts
-   are resolved by regeneration. Runtime conflicts should be limited to the three seam
-   files above; a conflict elsewhere requires an ownership review.
+   are resolved by regeneration. Runtime conflicts should be limited to the registered
+   seam files above; a conflict elsewhere requires an ownership review.
 4. Run `npm run fix-check` and `npm test`. A dropped seam reference fails the typecheck;
    a behavioral regression fails the `src/lens` tests.
 5. `grep -rn "lens-seam" src/ AGENTS.md` must match the registry. Inspect the diff for any

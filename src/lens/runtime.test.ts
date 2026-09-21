@@ -25,10 +25,10 @@ function fakeInnerRunner(calls: RunActionInput[], providerOk: { value: boolean }
   return {
     async run(input: RunActionInput): Promise<ActionRunResult> {
       calls.push(input);
-      const actionDecision = input.policy?.evaluate({ id: input.actionId } as ActionDefinition);
-      const connectionDecision = input.policy?.evaluateConnection(input.connectionName);
-      const denial = actionDecision && !actionDecision.allowed ? actionDecision : connectionDecision;
-      if (denial && !denial.allowed) {
+      const actionDecision = input.policy.evaluate({ id: input.actionId } as ActionDefinition);
+      const connectionDecision = input.policy.evaluateConnection(input.connectionName);
+      const denial = !actionDecision.allowed ? actionDecision : connectionDecision;
+      if (!denial.allowed) {
         return {
           executionId: crypto.randomUUID(),
           auditPersisted: true,
@@ -91,7 +91,12 @@ async function fixture(policy: Partial<LensPolicy> = {}): Promise<Fixture> {
   };
 }
 
-const baseRun: RunActionInput = { actionId: "github.merge", input: { repo: "a/b" }, caller: "http" };
+const baseRun: RunActionInput = {
+  actionId: "github.merge",
+  input: { repo: "a/b" },
+  caller: "http",
+  policy: new ActionPolicyService({}).createSnapshot(),
+};
 
 describe("LensRuntime execution path", () => {
   it("passes through with an empty policy and writes evidence", async () => {
@@ -125,7 +130,7 @@ describe("LensRuntime execution path", () => {
     expect((await f.wrapped.run(baseRun))?.result.ok).toBe(true);
     const limited = await f.wrapped.run(baseRun);
     expect(limited?.result.error?.code).toBe("rate_limited");
-    expect((limited?.result.error?.details as { code: string }).code).toBe("usage_limit_exceeded");
+    expect((limited?.result.error?.details as { code?: string } | undefined)?.code).toBe("usage_limit_exceeded");
     expect(f.calls).toHaveLength(1);
   });
 
@@ -145,11 +150,11 @@ describe("LensRuntime execution path", () => {
       meters: [{ name: "refund_value", action: "stripe.refund", kind: "number", path: "/amount" }],
       usageLimits: [{ meter: "refund_value", limit: "10000", windowSeconds: 86_400 }],
     });
-    const ok = await f.wrapped.run({ actionId: "stripe.refund", input: { amount: 9000 }, caller: "http" });
+    const ok = await f.wrapped.run({ ...baseRun, actionId: "stripe.refund", input: { amount: 9000 } });
     expect(ok?.result.ok).toBe(true);
-    const over = await f.wrapped.run({ actionId: "stripe.refund", input: { amount: 2000 }, caller: "http" });
+    const over = await f.wrapped.run({ ...baseRun, actionId: "stripe.refund", input: { amount: 2000 } });
     expect(over?.result.error?.code).toBe("rate_limited");
-    const bad = await f.wrapped.run({ actionId: "stripe.refund", input: { amount: "9000" }, caller: "http" });
+    const bad = await f.wrapped.run({ ...baseRun, actionId: "stripe.refund", input: { amount: "9000" } });
     expect(bad?.result.error?.code).toBe("input_constraint_violation");
   });
 });

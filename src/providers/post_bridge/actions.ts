@@ -199,6 +199,7 @@ export const postBridgeActions: ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "list_social_accounts",
     description: "List connected social accounts, with optional platform and username filters.",
+    operationType: "read",
     inputSchema: s.object(
       "Filters for connected social accounts.",
       {
@@ -213,12 +214,14 @@ export const postBridgeActions: ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "get_social_account",
     description: "Get one connected social account.",
+    operationType: "read",
     inputSchema: s.object("The social account to retrieve.", { id: socialAccountIdSchema }),
     outputSchema: recordOutputSchema,
   }),
   defineProviderAction(service, {
     name: "list_posts",
     description: "List posts with optional platform and status filters.",
+    operationType: "read",
     inputSchema: s.object(
       "Filters for posts.",
       {
@@ -233,6 +236,7 @@ export const postBridgeActions: ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "create_post",
     description: "Create a post to publish immediately, schedule, queue, or save as a draft.",
+    operationType: "write",
     inputSchema: s.object(
       "Post data.",
       { ...postFields, use_queue: useQueueSchema },
@@ -254,12 +258,14 @@ export const postBridgeActions: ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "get_post",
     description: "Get a post by ID.",
+    operationType: "read",
     inputSchema: s.object("The post to retrieve.", { id: idSchema }),
     outputSchema: recordOutputSchema,
   }),
   defineProviderAction(service, {
     name: "update_post",
     description: "Update a scheduled or draft post. Include scheduled_at when changing a scheduled post.",
+    operationType: "write",
     inputSchema: s.object(
       "Post changes.",
       { id: idSchema, ...postFields },
@@ -282,12 +288,14 @@ export const postBridgeActions: ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "delete_post",
     description: "Delete a scheduled or draft post.",
+    operationType: "destructive",
     inputSchema: s.object("The post to delete.", { id: idSchema }),
     outputSchema: recordOutputSchema,
   }),
   defineProviderAction(service, {
     name: "list_media",
     description: "List uploaded media with optional post and media-type filters.",
+    operationType: "read",
     inputSchema: s.object(
       "Filters for media.",
       {
@@ -302,12 +310,14 @@ export const postBridgeActions: ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "get_media",
     description: "Get uploaded media by ID.",
+    operationType: "read",
     inputSchema: s.object("The media to retrieve.", { id: idSchema }),
     outputSchema: recordOutputSchema,
   }),
   defineProviderAction(service, {
     name: "create_upload_url",
     description: "Create a signed URL for uploading media, then use its media_id when creating a post.",
+    operationType: "write",
     inputSchema: s.object("Media upload metadata.", {
       mime_type: s.stringEnum("Media MIME type.", [
         "image/png",
@@ -328,6 +338,7 @@ export const postBridgeActions: ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "upload_media",
     description: "Upload a local transit file to Post Bridge and return its media ID.",
+    operationType: "write",
     inputSchema: s.object("Media file to upload.", {
       file: s.transitFile("A PNG, JPEG, MP4, QuickTime video, or PDF transit file."),
     }),
@@ -339,12 +350,14 @@ export const postBridgeActions: ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "delete_media",
     description: "Delete uploaded media by ID.",
+    operationType: "destructive",
     inputSchema: s.object("The media to delete.", { id: idSchema }),
     outputSchema: recordOutputSchema,
   }),
   defineProviderAction(service, {
     name: "list_post_results",
     description: "List per-platform publishing results with optional post and platform filters.",
+    operationType: "read",
     inputSchema: s.object(
       "Filters for post results.",
       {
@@ -359,12 +372,14 @@ export const postBridgeActions: ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "get_post_result",
     description: "Get a per-platform publishing result by ID.",
+    operationType: "read",
     inputSchema: s.object("The post result to retrieve.", { id: idSchema }),
     outputSchema: recordOutputSchema,
   }),
   defineProviderAction(service, {
     name: "list_analytics",
     description: "List post analytics with optional platform, result, and timeframe filters.",
+    operationType: "read",
     inputSchema: s.object(
       "Filters for post analytics.",
       {
@@ -380,18 +395,21 @@ export const postBridgeActions: ProviderActionDefinition[] = [
   defineProviderAction(service, {
     name: "get_analytics",
     description: "Get one analytics record by ID.",
+    operationType: "read",
     inputSchema: s.object("The analytics record to retrieve.", { id: idSchema }),
     outputSchema: recordOutputSchema,
   }),
   defineProviderAction(service, {
     name: "get_daily_analytics",
     description: "Get daily analytics snapshots and per-day deltas for one analytics record.",
+    operationType: "read",
     inputSchema: s.object("The analytics record to retrieve.", { id: idSchema }),
     outputSchema: recordOutputSchema,
   }),
   defineProviderAction(service, {
     name: "sync_analytics",
     description: "Start an analytics refresh for all supported accounts or one platform.",
+    operationType: "write",
     inputSchema: s.object(
       "Analytics sync options.",
       { platform: s.stringEnum("Platform to refresh.", ["tiktok", "youtube", "instagram"]) },

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeAction } from "../../core/execution.ts";
 import { setDefaultGuardedFetchDnsLookup } from "../../core/guarded-fetch.ts";
 import { provider } from "./definition.ts";
-import { executors } from "./executors.ts";
+import { credentialValidators, executors } from "./executors.ts";
 
 interface CapturedRequest {
   url: URL;
@@ -183,6 +183,121 @@ describe("Google Drive files.get", () => {
   });
 });
 
+describe("Google Drive files.list sharing capability", () => {
+  /// The projection is the whole mechanism: `fields` is an allow-list, so a
+  /// member dropped here is a field Drive never sends and no amount of
+  /// downstream mapping can recover. Asserted on the request rather than only
+  /// on the row, because a row test passes on a fixture that was never asked
+  /// for.
+  it("asks Drive for ownedByMe and the canShare capability", async () => {
+    const requests = stubGoogleResponses([Response.json({ files: [], nextPageToken: null })]);
+
+    await executeList({});
+
+    const fields = requests[0]?.url.searchParams.get("fields") ?? "";
+    expect(fields).toContain("ownedByMe");
+    expect(fields).toContain("capabilities(canShare)");
+  });
+
+  it("passes both through when Drive answers them", async () => {
+    stubGoogleResponses([
+      Response.json({
+        files: [
+          {
+            id: "folder-1",
+            name: "Owned folder",
+            mimeType: "application/vnd.google-apps.folder",
+            ownedByMe: true,
+            capabilities: { canShare: true },
+          },
+        ],
+      }),
+    ]);
+
+    const result = await executeList({});
+
+    expect(result.ok).toBe(true);
+    const file = (result.output as { files: Record<string, unknown>[] }).files[0]!;
+    expect(file.ownedByMe).toBe(true);
+    expect(file.capabilities).toEqual({ canShare: true });
+  });
+
+  /// `false` is a real answer and must survive: it is the whole point of the
+  /// field, and a mapper that treated falsy as absent would erase exactly the
+  /// rows a caller wants to know about.
+  it("keeps a negative answer rather than dropping it", async () => {
+    stubGoogleResponses([
+      Response.json({
+        files: [
+          {
+            id: "folder-2",
+            name: "Shared with me",
+            mimeType: "application/vnd.google-apps.folder",
+            ownedByMe: false,
+            capabilities: { canShare: false },
+          },
+        ],
+      }),
+    ]);
+
+    const result = await executeList({});
+
+    const file = (result.output as { files: Record<string, unknown>[] }).files[0]!;
+    expect(file.ownedByMe).toBe(false);
+    expect(file.capabilities).toEqual({ canShare: false });
+  });
+
+  /// "Drive did not say" is not "the caller may not share". A default would
+  /// make those two the same, and they lead a consumer to opposite actions.
+  it("omits both when Drive did not answer them", async () => {
+    stubGoogleResponses([
+      Response.json({
+        files: [{ id: "folder-3", name: "Unknown", mimeType: "application/vnd.google-apps.folder" }],
+      }),
+    ]);
+
+    const result = await executeList({});
+
+    const file = (result.output as { files: Record<string, unknown>[] }).files[0]!;
+    expect(file).not.toHaveProperty("ownedByMe");
+    expect(file).not.toHaveProperty("capabilities");
+  });
+});
+
+describe("Google Drive OAuth credential validation", () => {
+  it("requests only the About user field and uses its email address as the account id", async () => {
+    const requests: CapturedRequest[] = [];
+
+    const result = await credentialValidators.oauth2!(oauthCredential, {
+      fetcher: async (input, init) => {
+        requests.push({
+          url: new URL(String(input)),
+          authorization: new Headers(init?.headers).get("authorization"),
+        });
+        return Response.json({ user: { emailAddress: "someone@example.com", displayName: "Someone" } });
+      },
+    });
+
+    expect(result).toMatchObject({
+      profile: { accountId: "someone@example.com", displayName: "Someone" },
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.url.pathname).toBe("/drive/v3/about");
+    expect(Object.fromEntries(requests[0]!.url.searchParams)).toEqual({ fields: "user" });
+    expect(requests[0]?.authorization).toBe("Bearer drive-access-token");
+  });
+
+  it("falls back to the generic account id when the About user has no email address", async () => {
+    const result = await credentialValidators.oauth2!(oauthCredential, {
+      fetcher: async () => Response.json({ user: { displayName: "No Mail" } }),
+    });
+
+    expect(result).toMatchObject({
+      profile: { accountId: "googledrive:oauth2", displayName: "No Mail" },
+    });
+  });
+});
+
 function stubGoogleResponses(responses: Response[]): CapturedRequest[] {
   const requests: CapturedRequest[] = [];
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -239,6 +354,21 @@ async function executeGet(input: Record<string, unknown>, transitFiles?: Transit
   return executeAction(
     provider.actions.find((action) => action.name === "files.get")!,
     executors["googledrive.files.get"],
+    input,
+    context,
+  );
+}
+
+async function executeList(input: Record<string, unknown>) {
+  const context: ExecutionContext = {
+    getCredential: async (service) => {
+      expect(service).toBe("googledrive");
+      return oauthCredential;
+    },
+  };
+  return executeAction(
+    provider.actions.find((action) => action.name === "files.list")!,
+    executors["googledrive.files.list"],
     input,
     context,
   );

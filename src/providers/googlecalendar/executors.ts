@@ -1,4 +1,4 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { OAuthProviderContext } from "../provider-runtime.ts";
 
@@ -10,11 +10,8 @@ import {
   pickOptionalString,
   requiredRecord,
 } from "../../core/cast.ts";
-import {
-  combineProviderActionHandlers,
-  defineOAuthProviderExecutors,
-  ProviderRequestError,
-} from "../provider-runtime.ts";
+import { defineGoogleProviderExecutors, googleBearerProxyAuth, googleServiceAccountValidator } from "../google-auth.ts";
+import { combineProviderActionHandlers, defineProviderProxy, ProviderRequestError } from "../provider-runtime.ts";
 import { googlecalendarEventActionHandlers } from "./runtime-events.ts";
 import {
   googlecalendarApiBaseUrl,
@@ -24,6 +21,7 @@ import {
   resolveRuleId,
   resolveSettingId,
 } from "./runtime-shared.ts";
+import { googlecalendarOAuthScopes } from "./scopes.ts";
 
 type GooglecalendarRuntimeDeps = OAuthProviderContext;
 
@@ -155,10 +153,20 @@ export const googlecalendarActionHandlers: ProviderActionHandlers<"googlecalenda
     googlecalendarEventActionHandlers,
   );
 
-export const executors: ProviderExecutors = defineOAuthProviderExecutors(
+export const executors: ProviderExecutors = defineGoogleProviderExecutors(
   "googlecalendar",
   googlecalendarActionHandlers,
+  {
+    scopes: googlecalendarOAuthScopes,
+  },
 );
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service: "googlecalendar",
+  baseUrl: googlecalendarApiBaseUrl,
+  auth: googleBearerProxyAuth(googlecalendarOAuthScopes),
+  skipDnsValidation: true,
+});
 
 export const credentialValidators: CredentialValidators = {
   async oauth2(input, { fetcher, signal }) {
@@ -182,6 +190,7 @@ export const credentialValidators: CredentialValidators = {
       },
     };
   },
+  customCredential: googleServiceAccountValidator("googlecalendar", googlecalendarOAuthScopes),
 };
 
 async function listCalendars(input: Record<string, unknown>, { accessToken, fetcher }: GooglecalendarRuntimeDeps) {

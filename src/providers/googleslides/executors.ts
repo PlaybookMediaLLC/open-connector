@@ -3,8 +3,10 @@ import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { OAuthProviderContext } from "../provider-runtime.ts";
 
 import { compactObject, objectArray, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
+import { defineGoogleProviderExecutors, googleBearerProxyAuth, googleServiceAccountValidator } from "../google-auth.ts";
 import { googleJsonRequest } from "../google-runtime.ts";
-import { defineOAuthProviderExecutors, defineProviderProxy, ProviderRequestError } from "../provider-runtime.ts";
+import { defineProviderProxy, providerInputError, ProviderRequestError } from "../provider-runtime.ts";
+import { googleSlidesOAuthScopes } from "./scopes.ts";
 
 export const slidesApiBaseUrl = "https://slides.googleapis.com/v1";
 export const googleDriveApiBaseUrl = "https://www.googleapis.com/drive/v3";
@@ -57,7 +59,9 @@ export const googleSlidesActionHandlers: ProviderActionHandlers<"googleslides", 
   presentations_copy_from_template: copyPresentationFromTemplate,
 };
 
-export const executors: ProviderExecutors = defineOAuthProviderExecutors(service, googleSlidesActionHandlers);
+export const executors: ProviderExecutors = defineGoogleProviderExecutors(service, googleSlidesActionHandlers, {
+  scopes: googleSlidesOAuthScopes,
+});
 
 export const credentialValidators: CredentialValidators = {
   async oauth2(input, { fetcher, signal }) {
@@ -80,6 +84,7 @@ export const credentialValidators: CredentialValidators = {
       },
     };
   },
+  customCredential: googleServiceAccountValidator(service, googleSlidesOAuthScopes),
 };
 
 async function createPresentation(input: Record<string, unknown>, context: GoogleSlidesRuntimeContext) {
@@ -125,7 +130,7 @@ async function batchUpdatePresentation(input: Record<string, unknown>, context: 
       context,
       method: "POST",
       body: compactObject({
-        requests: objectArray(input.requests, "requests", providerRequestError),
+        requests: objectArray(input.requests, "requests", providerInputError),
         writeControl: optionalRecord(input.writeControl),
       }),
     },
@@ -346,12 +351,8 @@ function requireString(value: string | undefined, message: string): string {
   throw new ProviderRequestError(502, message);
 }
 
-function providerRequestError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
 export const proxy: ProviderProxyExecutor = defineProviderProxy({
   service,
   baseUrl: "https://slides.googleapis.com/v1",
-  auth: { type: "oauth_bearer" },
+  auth: googleBearerProxyAuth(googleSlidesOAuthScopes),
 });

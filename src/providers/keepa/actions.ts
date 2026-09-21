@@ -188,7 +188,7 @@ const historyPointSchema = s.object("One normalized Keepa history data point.", 
 const historySeriesSchema = s.object("One named Keepa product history series.", {
   type: s.stringEnum("Official Keepa Product.CsvType name.", keepaHistoryTypes),
   index: s.integer("Official Keepa Product.CsvType array index."),
-  unit: s.stringEnum("Unit interpretation for values in this series.", [
+  unit: s.stringEnum("Unit interpretation for values in this series; lower sales-rank values indicate better rank.", [
     "minor_currency_unit",
     "sales_rank",
     "count",
@@ -199,11 +199,46 @@ const historySeriesSchema = s.object("One named Keepa product history series.", 
   points: s.array("Chronological history points.", historyPointSchema),
 });
 
+const monthlySoldHistoryPointSchema = s.object("One historical Amazon bought-in-past-month value.", {
+  keepaTime: s.integer("Original Keepa Time value in minutes."),
+  timestamp: s.dateTime("UTC timestamp converted from Keepa Time."),
+  value: s.integer("Amazon's bought-in-past-month value observed by Keepa; this is not a sales estimate."),
+});
+
+const couponHistoryPointSchema = s.object("One historical Keepa coupon observation.", {
+  keepaTime: s.integer("Original Keepa Time value in minutes."),
+  timestamp: s.dateTime("UTC timestamp converted from Keepa Time."),
+  oneTimeCoupon: s.integer(
+    "One-time coupon discount: zero means unavailable, positive values use the marketplace's smallest currency unit, and negative values are percentage discounts.",
+  ),
+  subscribeAndSaveCoupon: s.integer(
+    "Subscribe-and-Save coupon discount: zero means unavailable, positive values use the marketplace's smallest currency unit, and negative values are percentage discounts.",
+  ),
+});
+
+const salesRankHistorySchema = s.object("One Amazon subcategory sales-rank history.", {
+  categoryId: s.integer("Amazon subcategory node ID."),
+  points: s.array(
+    "Chronological sales-rank observations; lower values indicate better rank.",
+    s.object("One historical sales-rank observation.", {
+      keepaTime: s.integer("Original Keepa Time value in minutes."),
+      timestamp: s.dateTime("UTC timestamp converted from Keepa Time."),
+      value: s.integer("Amazon sales rank; lower values indicate better rank."),
+    }),
+  ),
+});
+
 const productHistorySchema = s.object("Normalized Keepa history for one product.", {
   asin: s.string("Amazon ASIN."),
   title: s.nullableString("Amazon product title."),
   brand: s.nullableString("Product brand."),
   series: s.array("Named Keepa history series.", historySeriesSchema),
+  monthlySoldHistory: s.array(
+    "Historical Amazon bought-in-past-month values returned by Keepa.",
+    monthlySoldHistoryPointSchema,
+  ),
+  couponHistory: s.array("Historical coupon observations returned by Keepa.", couponHistoryPointSchema),
+  salesRankHistory: s.array("Sales-rank histories grouped by Amazon subcategory.", salesRankHistorySchema),
   raw: s.looseObject("The complete Keepa product object including raw history arrays."),
 });
 
@@ -321,6 +356,7 @@ const dealRangeSchema: JsonSchema = {
 
 const getTokenStatusAction = defineProviderAction(service, {
   name: "get_token_status",
+  operationType: "read",
   description: "Retrieve Keepa token availability and refill information without consuming tokens.",
   requiredScopes: [],
   inputSchema: s.actionInput({}, [], "Input for retrieving Keepa token status."),
@@ -334,6 +370,7 @@ const getTokenStatusAction = defineProviderAction(service, {
 
 const getProductSnapshotAction = defineProviderAction(service, {
   name: "get_product_snapshot",
+  operationType: "read",
   description: "Retrieve current Keepa product metadata and named statistics for one or more Amazon ASINs.",
   requiredScopes: [],
   inputSchema: withProductRequestRules(
@@ -352,8 +389,9 @@ const getProductSnapshotAction = defineProviderAction(service, {
 
 const getProductHistoryAction = defineProviderAction(service, {
   name: "get_product_history",
+  operationType: "read",
   description:
-    "Retrieve named, timestamped Keepa price, rank, offer-count, rating, and review history for Amazon ASINs.",
+    "Retrieve named Keepa price, rank, offer-count, rating, review, monthly-sales, and coupon history for Amazon ASINs.",
   requiredScopes: [],
   inputSchema: withProductRequestRules(
     s.actionInput(
@@ -362,7 +400,7 @@ const getProductHistoryAction = defineProviderAction(service, {
         asins: asinsSchema,
         days: s.positiveInteger("Limit all returned history to the most recent number of 24-hour periods."),
         historyTypes: s.array(
-          "Keepa history series to include in the normalized output.",
+          "Keepa CSV history series to include in `series`; this does not suppress monthlySoldHistory, couponHistory, or salesRankHistory when Keepa returns them.",
           s.stringEnum("One official Keepa Product.CsvType name.", keepaHistoryTypes),
           { minItems: 1 },
         ),
@@ -377,6 +415,7 @@ const getProductHistoryAction = defineProviderAction(service, {
 
 const findProductsAction = defineProviderAction(service, {
   name: "find_products",
+  operationType: "read",
   description: "Find Amazon ASINs with Keepa Product Finder filters using official ProductFinderRequest field names.",
   requiredScopes: [],
   inputSchema: s.actionInput(
@@ -400,6 +439,7 @@ const findProductsAction = defineProviderAction(service, {
 
 const searchCategoriesAction = defineProviderAction(service, {
   name: "search_categories",
+  operationType: "read",
   description: "Search Keepa Amazon categories by name so category IDs can be used in product and best-seller queries.",
   requiredScopes: [],
   inputSchema: s.actionInput(
@@ -424,6 +464,7 @@ const searchCategoriesAction = defineProviderAction(service, {
 
 const getBestSellersAction = defineProviderAction(service, {
   name: "get_best_sellers",
+  operationType: "read",
   description: "Retrieve Keepa's ordered Amazon best-seller ASIN list for a category node or website display group.",
   requiredScopes: [],
   inputSchema: s.actionInput(
@@ -455,6 +496,7 @@ const getBestSellersAction = defineProviderAction(service, {
 
 const findDealsAction = defineProviderAction(service, {
   name: "find_deals",
+  operationType: "read",
   description: "Find recently changed Amazon products with Keepa deal filters and bounded pagination.",
   requiredScopes: [],
   inputSchema: s.actionInput(
@@ -521,6 +563,7 @@ const findDealsAction = defineProviderAction(service, {
 
 const getSellerSnapshotAction = defineProviderAction(service, {
   name: "get_seller_snapshot",
+  operationType: "read",
   description:
     "Retrieve compact Keepa marketplace seller profiles, ratings, category statistics, brands, and competitors.",
   requiredScopes: [],

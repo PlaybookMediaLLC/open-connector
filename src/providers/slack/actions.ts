@@ -6,21 +6,40 @@ import { slackConversationTypes, slackNormalizedConversationTypes } from "./cons
 
 const service = "slack";
 
-const nonEmptyString = (description: string): JsonSchema => s.nonEmptyString(description);
-const channelIdSchema = nonEmptyString("The Slack conversation or channel ID.");
-const messageTsSchema = nonEmptyString("The Slack message timestamp, for example '1711.0001'.");
-const userIdSchema = nonEmptyString("The Slack user ID.");
-const fileIdSchema = nonEmptyString("The Slack file ID.");
+const channelIdSchema = s.nonEmptyString("The Slack conversation or channel ID.");
+const messageTsSchema = s.nonEmptyString("The Slack message timestamp, for example '1711.0001'.");
+const userIdSchema = s.nonEmptyString("The Slack user ID.");
+const fileIdSchema = s.nonEmptyString("The Slack file ID.");
 const searchSortSchema = s.stringEnum(["score", "timestamp"], {
   description: "How Slack should sort search results.",
 });
 const sortDirectionSchema = s.stringEnum(["asc", "desc"], {
   description: "The sort direction for Slack search results.",
 });
-
 const conversationTypeSchema = s.stringEnum([...slackConversationTypes], {
   description: "A Slack conversation type.",
 });
+
+// `conversations.history` and `conversations.replies` take the same time
+// window, so it is declared once. The bounds are Slack `ts` strings
+// ("<epoch seconds>.<6 digits>"), NOT epoch integers: Slack compares them
+// against the message `ts` lexically-as-decimal, and a bare integer is a
+// legal value for that same field. Left as `string` rather than a pattern
+// so a caller can pass a `ts` it read back from a message verbatim.
+const historyWindowProperties = {
+  oldest: s.string({
+    description:
+      "Only return messages after this Slack timestamp, for example '1700000000.123456'. The message at exactly this timestamp is included only when inclusive is true.",
+  }),
+  latest: s.string({
+    description:
+      "Only return messages before this Slack timestamp. Defaults to now. The message at exactly this timestamp is included only when inclusive is true.",
+  }),
+  inclusive: s.boolean({
+    description:
+      "Include messages whose timestamp equals oldest or latest. Slack ignores this unless one of those bounds is set.",
+  }),
+};
 
 const slackBlockSchema = s.unknownObject(
   "A Slack Block Kit block object. Pass the block exactly as Slack documents it.",
@@ -47,11 +66,48 @@ const messageContentProperties = {
   metadata: s.unknownObject("Slack message metadata to attach to the message."),
 };
 
+const slackReactionSchema = s.looseObject(
+  {
+    name: s.string({ description: "The emoji name of the reaction." }),
+    count: s.integer({ description: "How many users added this reaction." }),
+    userIds: s.array(s.string({ description: "A Slack user ID." }), {
+      description: "The users who added this reaction, as far as Slack reports them.",
+    }),
+  },
+  { description: "A reaction summary on a Slack message." },
+);
+
+// Only fields the executor actually normalizes are declared. The object is
+// loose, but that permits extras it does NOT make them appear: the executor
+// builds each row explicitly, so an undeclared Slack field is simply not
+// emitted. Deliberately absent: `blocks`, `attachments` and `files`. Those
+// are unbounded nested payloads on a row shape that ETL reads in bulk, and
+// each wants its own normalized contract rather than a raw passthrough.
 const slackMessageSchema = s.looseObject(
   {
     ts: s.string({ description: "The message timestamp identifier." }),
+    type: s.string({ description: "The Slack message type, normally 'message'." }),
+    subtype: s.string({
+      description: "The Slack message subtype ('channel_join', 'bot_message', …) when the message has one.",
+    }),
     userId: s.string({ description: "The user ID of the message author." }),
+    botId: s.string({ description: "The bot ID of the message author when a bot posted it." }),
+    appId: s.string({ description: "The Slack app ID that posted the message when an app posted it." }),
+    username: s.string({ description: "The display username Slack attached to a bot or app message." }),
+    teamId: s.string({ description: "The Slack team ID the message belongs to." }),
+    clientMsgId: s.string({ description: "The client-generated message identifier when Slack returns one." }),
     text: s.string({ description: "The text content of the message." }),
+    editedTs: s.string({ description: "The timestamp of the most recent edit, when the message was edited." }),
+    threadTs: s.string({
+      description:
+        "The timestamp of the thread parent. Equal to ts on a thread parent, and absent on a message that is not in a thread.",
+    }),
+    parentUserId: s.string({ description: "The author of the thread parent, on a threaded reply." }),
+    replyCount: s.integer({ description: "The number of replies to this thread parent." }),
+    replyUsersCount: s.integer({ description: "The number of distinct users who replied to this thread parent." }),
+    latestReply: s.string({ description: "The timestamp of the most recent reply to this thread parent." }),
+    isLocked: s.boolean({ description: "Whether the thread is locked." }),
+    reactions: s.array(slackReactionSchema, { description: "Reaction summaries attached to the message." }),
   },
   { description: "A Slack message record." },
 );
@@ -81,7 +137,7 @@ const conversationSchema = s.object(
     }),
     isArchived: s.nullable(s.boolean({ description: "Whether the conversation is archived." })),
     isPrivate: s.nullable(s.boolean({ description: "Whether the conversation is private." })),
-    isMember: s.nullable(s.boolean({ description: "Whether the bot user is a member." })),
+    isMember: s.nullable(s.boolean({ description: "Whether the connected Slack identity is a member." })),
     memberCount: s.integer({ description: "The member count when Slack provides it." }),
     topic: s.nullable(s.string({ description: "The conversation topic." })),
     purpose: s.nullable(s.string({ description: "The conversation purpose." })),
@@ -151,8 +207,25 @@ const reactionItemSchema = s.unknownObject("A Slack item with reactions.");
 
 export const slackActions: ActionDefinition[] = [
   action({
+    name: "get_current_user",
+    operationType: "read",
+    description:
+      "Get the workspace and user identity of the connected Slack credential, including whether it belongs to a bot.",
+    requiredScopes: [],
+    inputSchema: s.object({}),
+    outputSchema: s.object(
+      {
+        teamId: s.nonEmptyString("The Slack workspace ID."),
+        userId: userIdSchema,
+        isBot: s.boolean({ description: "Whether auth.test identifies this credential with a bot_id." }),
+      },
+      { required: ["teamId", "userId", "isBot"] },
+    ),
+  }),
+  action({
     name: "list_channels",
-    description: "List Slack public channels visible to the bot.",
+    operationType: "read",
+    description: "List Slack public channels visible to the connected Slack identity.",
     requiredScopes: ["channels:read"],
     inputSchema: s.object(
       {
@@ -167,12 +240,19 @@ export const slackActions: ActionDefinition[] = [
   }),
   action({
     name: "get_channel_messages",
+    operationType: "read",
     description: "Get recent messages from a Slack conversation.",
     requiredScopes: ["channels:history", "groups:history", "im:history", "mpim:history"],
     inputSchema: s.object(
       {
         channelId: channelIdSchema,
-        limit: s.integer({ minimum: 1, maximum: 100, description: "The maximum number of messages to return." }),
+        // 999 is `conversations.history`'s documented ceiling. The former 100
+        // was this action's own invention and cost a request per 100 messages.
+        limit: s.integer({ minimum: 1, maximum: 999, description: "The maximum number of messages to return." }),
+        cursor: s.string({
+          description: "The Slack pagination cursor from a previous page. Omit for the first page.",
+        }),
+        ...historyWindowProperties,
       },
       { required: ["channelId"], description: "Input parameters for reading Slack conversation history." },
     ),
@@ -180,18 +260,54 @@ export const slackActions: ActionDefinition[] = [
       {
         messages: s.array(slackMessageSchema, { description: "The list of messages in the conversation." }),
         hasMore: s.boolean({ description: "Whether more messages are available beyond this page." }),
+        nextCursor: s.string({
+          description: "The cursor for the next page, or an empty string when this is the last page.",
+        }),
       },
-      { required: ["messages", "hasMore"], description: "The output payload for this action." },
+      { required: ["messages", "hasMore", "nextCursor"], description: "The output payload for this action." },
+    ),
+  }),
+  action({
+    name: "conversations_members",
+    operationType: "read",
+    description:
+      "List the member user IDs of a Slack conversation. Returns one page; pass the cursor from nextCursor until it comes back empty.",
+    requiredScopes: ["channels:read", "groups:read", "im:read", "mpim:read"],
+    inputSchema: s.object(
+      {
+        channelId: channelIdSchema,
+        cursor: s.string({
+          description: "The Slack pagination cursor from a previous page. Omit for the first page.",
+        }),
+        limit: s.integer({
+          minimum: 1,
+          maximum: 1000,
+          description: "The maximum number of members to return per page.",
+        }),
+      },
+      { required: ["channelId"], description: "Input parameters for listing Slack conversation members." },
+    ),
+    outputSchema: s.object(
+      {
+        memberIds: s.array(userIdSchema, {
+          description: "The Slack user IDs that are members of the conversation.",
+        }),
+        nextCursor: s.string({
+          description: "The cursor for the next page, or an empty string when this is the last page.",
+        }),
+      },
+      { required: ["memberIds", "nextCursor"], description: "The output payload for this action." },
     ),
   }),
   action({
     name: "search_messages",
+    operationType: "read",
     description:
       "Search Slack messages visible to the connected user. Supports Slack search modifiers such as in:channel_name and from:<@UserID>.",
     requiredScopes: ["search:read"],
     inputSchema: s.object(
       {
-        query: nonEmptyString("The Slack search query."),
+        query: s.nonEmptyString("The Slack search query."),
         count: s.integer({
           minimum: 1,
           maximum: 100,
@@ -224,7 +340,53 @@ export const slackActions: ActionDefinition[] = [
     ),
   }),
   action({
+    name: "search_context",
+    operationType: "read",
+    description: "Search Slack messages with the granular Real-time Search API.",
+    requiredScopes: ["search:read.public"],
+    inputSchema: s.object(
+      {
+        query: s.nonEmptyString("The Slack search query."),
+        channelTypes: s.array(
+          s.stringEnum(["public_channel", "private_channel"], {
+            description: "The Slack channel type to search.",
+          }),
+          { minItems: 1, description: "Channel types to search." },
+        ),
+        contextChannelId: s.nonEmptyString("The channel ID used to scope the search when applicable."),
+        cursor: s.string({ description: "The cursor for the next page." }),
+        limit: s.integer({ minimum: 1, maximum: 20, description: "The number of results to return." }),
+        sort: searchSortSchema,
+        sortDir: sortDirectionSchema,
+        before: s.integer({ description: "Only return messages before this UNIX timestamp." }),
+        after: s.integer({ description: "Only return messages after this UNIX timestamp." }),
+        includeContextMessages: s.boolean({ description: "Whether to include surrounding context messages." }),
+        includeBots: s.boolean({ description: "Whether to include messages posted by bots." }),
+        includeMessageBlocks: s.boolean({ description: "Whether to include message blocks in the results." }),
+        highlight: s.boolean({ description: "Whether Slack should highlight matching terms." }),
+        termClauses: s.array(s.nonEmptyString("A search term clause."), {
+          minItems: 1,
+          description: "Search term clauses that every result must match.",
+        }),
+        modifiers: s.string({ description: "Slack search modifiers without free-text terms." }),
+        includeArchivedChannels: s.boolean({ description: "Whether to include archived channels in the search." }),
+        disableSemanticSearch: s.boolean({ description: "Whether to use keyword search without semantic search." }),
+      },
+      { required: ["query"], description: "Input parameters for Slack Real-time Search." },
+    ),
+    outputSchema: s.object(
+      {
+        messages: s.array(s.unknownObject("A Slack Real-time Search message."), {
+          description: "The matching Slack messages.",
+        }),
+        nextCursor: s.nullable(s.string({ description: "The cursor for the next page." })),
+      },
+      { required: ["messages", "nextCursor"], description: "The output payload for Slack Real-time Search." },
+    ),
+  }),
+  action({
     name: "post_message",
+    operationType: "write",
     description:
       "Post a Slack message. Use text for plain messages, or blocks for rich Block Kit layouts with text as fallback.",
     requiredScopes: ["chat:write"],
@@ -233,12 +395,13 @@ export const slackActions: ActionDefinition[] = [
   }),
   action({
     name: "reply_message",
+    operationType: "write",
     description: "Reply to a Slack thread. Use text, blocks, or attachments for the reply content.",
     requiredScopes: ["chat:write"],
     inputSchema: messageInputSchema(
       "Input parameters for replying to a Slack thread.",
       {
-        threadTs: nonEmptyString("The timestamp of the parent message to reply to."),
+        threadTs: s.nonEmptyString("The timestamp of the parent message to reply to."),
         replyBroadcast: s.boolean({ description: "Whether Slack should also broadcast the reply to the channel." }),
       },
       ["threadTs"],
@@ -247,12 +410,18 @@ export const slackActions: ActionDefinition[] = [
   }),
   action({
     name: "get_thread",
+    operationType: "read",
     description: "Get messages in a Slack thread.",
     requiredScopes: ["channels:history", "groups:history", "im:history", "mpim:history"],
     inputSchema: s.object(
       {
         channelId: channelIdSchema,
-        threadTs: nonEmptyString("The timestamp of the parent message."),
+        threadTs: s.nonEmptyString("The timestamp of the parent message."),
+        limit: s.integer({ minimum: 1, maximum: 999, description: "The maximum number of messages to return." }),
+        cursor: s.string({
+          description: "The Slack pagination cursor from a previous page. Omit for the first page.",
+        }),
+        ...historyWindowProperties,
       },
       { required: ["channelId", "threadTs"], description: "Input parameters for reading a Slack thread." },
     ),
@@ -260,13 +429,17 @@ export const slackActions: ActionDefinition[] = [
       {
         messages: s.array(slackMessageSchema, { description: "The list of messages in the thread." }),
         hasMore: s.boolean({ description: "Whether more messages are available beyond this page." }),
+        nextCursor: s.string({
+          description: "The cursor for the next page, or an empty string when this is the last page.",
+        }),
       },
-      { required: ["messages", "hasMore"], description: "The output payload for this action." },
+      { required: ["messages", "hasMore", "nextCursor"], description: "The output payload for this action." },
     ),
   }),
   action({
     name: "list_conversations",
-    description: "List Slack conversations visible to the bot.",
+    operationType: "read",
+    description: "List Slack conversations visible to the connected Slack identity.",
     requiredScopes: ["channels:read", "groups:read", "im:read", "mpim:read"],
     inputSchema: s.object(
       {
@@ -287,6 +460,7 @@ export const slackActions: ActionDefinition[] = [
   }),
   action({
     name: "get_conversation",
+    operationType: "read",
     description: "Get metadata for a Slack conversation.",
     requiredScopes: ["channels:read", "groups:read", "im:read", "mpim:read"],
     inputSchema: s.object(
@@ -304,6 +478,7 @@ export const slackActions: ActionDefinition[] = [
   }),
   action({
     name: "open_conversation",
+    operationType: "write",
     description: "Open or resume a direct message with one Slack user.",
     requiredScopes: ["im:write"],
     inputSchema: s.object(
@@ -327,7 +502,8 @@ export const slackActions: ActionDefinition[] = [
   }),
   action({
     name: "list_users",
-    description: "List Slack users visible to the bot.",
+    operationType: "read",
+    description: "List Slack users visible to the connected Slack identity.",
     requiredScopes: ["users:read"],
     inputSchema: s.object(
       {
@@ -347,6 +523,7 @@ export const slackActions: ActionDefinition[] = [
   }),
   action({
     name: "get_user",
+    operationType: "read",
     description: "Get metadata for a Slack user.",
     requiredScopes: ["users:read"],
     inputSchema: s.object(
@@ -363,6 +540,7 @@ export const slackActions: ActionDefinition[] = [
   }),
   action({
     name: "post_ephemeral_message",
+    operationType: "write",
     description: "Post an ephemeral Slack message visible only to one user in a conversation.",
     requiredScopes: ["chat:write"],
     inputSchema: messageInputSchema(
@@ -380,6 +558,7 @@ export const slackActions: ActionDefinition[] = [
   }),
   action({
     name: "get_message_permalink",
+    operationType: "read",
     description: "Get a permalink for a Slack message.",
     requiredScopes: ["channels:history", "groups:history", "im:history", "mpim:history"],
     inputSchema: s.object(
@@ -400,8 +579,9 @@ export const slackActions: ActionDefinition[] = [
   }),
   action({
     name: "update_message",
+    operationType: "write",
     description:
-      "Update a Slack message posted by the bot. Provide text, blocks, or attachments as the new message content.",
+      "Update a Slack message posted through this connection. Provide text, blocks, or attachments as the new message content.",
     requiredScopes: ["chat:write"],
     inputSchema: messageInputSchema("Input parameters for updating a Slack message.", { messageTs: messageTsSchema }, [
       "messageTs",
@@ -410,7 +590,8 @@ export const slackActions: ActionDefinition[] = [
   }),
   action({
     name: "delete_message",
-    description: "Delete a Slack message posted by the bot.",
+    operationType: "destructive",
+    description: "Delete a Slack message posted through this connection.",
     requiredScopes: ["chat:write"],
     inputSchema: s.object(
       {
@@ -423,6 +604,7 @@ export const slackActions: ActionDefinition[] = [
   }),
   action({
     name: "schedule_message",
+    operationType: "write",
     description: "Schedule a Slack message to be posted later. Use text or blocks for the scheduled content.",
     requiredScopes: ["chat:write"],
     inputSchema: messageInputSchema(
@@ -441,6 +623,7 @@ export const slackActions: ActionDefinition[] = [
   }),
   action({
     name: "add_reaction",
+    operationType: "write",
     description: "Add an emoji reaction to a Slack message.",
     requiredScopes: ["reactions:write"],
     inputSchema: reactionInputSchema("Input parameters for adding a Slack reaction."),
@@ -448,6 +631,7 @@ export const slackActions: ActionDefinition[] = [
   }),
   action({
     name: "remove_reaction",
+    operationType: "destructive",
     description: "Remove an emoji reaction from a Slack message.",
     requiredScopes: ["reactions:write"],
     inputSchema: reactionInputSchema("Input parameters for removing a Slack reaction."),
@@ -455,6 +639,7 @@ export const slackActions: ActionDefinition[] = [
   }),
   action({
     name: "get_reactions",
+    operationType: "read",
     description: "Get reactions for a Slack message.",
     requiredScopes: ["reactions:read"],
     inputSchema: s.object(
@@ -472,18 +657,19 @@ export const slackActions: ActionDefinition[] = [
   }),
   action({
     name: "upload_file",
+    operationType: "write",
     description:
       "Upload a file to Slack using the current external upload flow. Provide fileUrl; binary content is fetched by the connector runtime.",
     requiredScopes: ["files:write"],
     inputSchema: s.object(
       {
-        filename: nonEmptyString("The file name Slack should display."),
+        filename: s.nonEmptyString("The file name Slack should display."),
         fileUrl: s.url("A URL whose response body should be uploaded to Slack."),
         title: s.string({ description: "Optional file title shown in Slack." }),
         channelId: channelIdSchema,
         initialComment: s.string({ description: "Optional message text to post with the file." }),
         threadTs: messageTsSchema,
-        mimeType: nonEmptyString("The content type to send while uploading the file."),
+        mimeType: s.nonEmptyString("The content type to send while uploading the file."),
         altText: s.string({ description: "Alternative text for the uploaded file when Slack supports it." }),
         snippetType: s.string({ description: "Slack snippet type for text snippets." }),
       },
@@ -499,7 +685,8 @@ export const slackActions: ActionDefinition[] = [
   }),
   action({
     name: "list_files",
-    description: "List Slack files visible to the bot, optionally filtered by channel or user.",
+    operationType: "read",
+    description: "List Slack files visible to the connected Slack identity, optionally filtered by channel or user.",
     requiredScopes: ["files:read"],
     inputSchema: s.object(
       {
@@ -521,6 +708,7 @@ export const slackActions: ActionDefinition[] = [
   }),
   action({
     name: "get_file",
+    operationType: "read",
     description: "Get metadata for a Slack file.",
     requiredScopes: ["files:read"],
     inputSchema: s.object(
@@ -534,6 +722,7 @@ export const slackActions: ActionDefinition[] = [
   }),
   action({
     name: "delete_file",
+    operationType: "destructive",
     description: "Delete a Slack file.",
     requiredScopes: ["files:write"],
     inputSchema: s.object(
@@ -578,7 +767,7 @@ function reactionInputSchema(description: string): JsonSchema {
     {
       channelId: channelIdSchema,
       messageTs: messageTsSchema,
-      name: nonEmptyString("The emoji reaction name without surrounding colons."),
+      name: s.nonEmptyString("The emoji reaction name without surrounding colons."),
     },
     { required: ["channelId", "messageTs", "name"], description },
   );

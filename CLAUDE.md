@@ -10,7 +10,7 @@ conventions live in `AGENTS.md`.
 1. Put all new runtime code in `src/lens/`. Put tests beside the modules.
 2. Never add fork logic inline in upstream files. Mount fork code through a
    seam: one short line marked `// lens-seam`. Register every seam in the
-   RFC 0004 seam table. Audit with `grep -rn "lens-seam" src/`.
+   RFC 0004 seam table. Audit with `grep -rn "lens-seam" src/ AGENTS.md`.
 3. Wrap upstream chokepoints. Do not modify them. `wrapActionRunner` is the
    main hook.
 4. Use fork namespaces only: `lens_` tables, `LENS_*` env vars, routes under
@@ -30,8 +30,8 @@ Known conflict classes and their fixes:
   keeps the fork's versions automatically.
 - `registry.*.generated.ts`: regenerate with `npm run fix-check`. Do not merge
   the file content by hand.
-- Seam files (`connect-app.ts`, `index.ts`, `cloudflare.ts`): re-add the marked
-  lines.
+- Seam files (`connect-app.ts`, `connector-runtime.ts`, `index.ts`,
+  `cloudflare.ts`): re-add the marked lines.
 - A conflict anywhere else means a rule was broken. Fix the placement, not
   just the conflict.
 

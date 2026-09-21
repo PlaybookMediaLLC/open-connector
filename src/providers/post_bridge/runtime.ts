@@ -2,7 +2,13 @@ import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } fro
 
 import { optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
 import { assertPublicHttpUrl } from "../../core/request.ts";
-import { ProviderRequestError, providerUserAgent, readTransitFileInput } from "../provider-runtime.ts";
+import {
+  providerInputError,
+  providerResponseError,
+  ProviderRequestError,
+  providerUserAgent,
+  readTransitFileInput,
+} from "../provider-runtime.ts";
 
 const apiBaseUrl = "https://api.post-bridge.com";
 const validationPath = "/v1/social-accounts";
@@ -180,9 +186,9 @@ function postBody(input: Record<string, unknown>): Record<string, unknown> {
   const body = { ...input };
   if (Array.isArray(body.media_urls)) {
     body.media_urls = body.media_urls.map((value) =>
-      assertPublicHttpUrl(requiredString(value, "media_urls item", inputError), {
+      assertPublicHttpUrl(requiredString(value, "media_urls item", providerInputError), {
         fieldName: "media_urls item",
-        createError: inputError,
+        createError: providerInputError,
       }).toString(),
     );
   }
@@ -192,7 +198,7 @@ function postBody(input: Record<string, unknown>): Record<string, unknown> {
 async function uploadMedia(input: Record<string, unknown>, context: ApiKeyProviderContext): Promise<unknown> {
   const source = await readTransitFileInput(input.file, context);
   if (!supportedMediaMimeTypes.has(source.mimeType)) {
-    throw inputError(`file.mimeType must be one of ${Array.from(supportedMediaMimeTypes).join(", ")}`);
+    throw providerInputError(`file.mimeType must be one of ${Array.from(supportedMediaMimeTypes).join(", ")}`);
   }
 
   const uploadPayload = optionalRecord(
@@ -288,19 +294,11 @@ function toPostBridgeError(status: number, payload: unknown, mode: PostBridgeReq
 }
 
 function resourceId(input: Record<string, unknown>): string {
-  return encodeURIComponent(requiredString(input.id, "id", inputError));
+  return encodeURIComponent(requiredString(input.id, "id", providerInputError));
 }
 
 function socialAccountId(input: Record<string, unknown>): string {
   const id = input.id;
   if (typeof id === "number" && Number.isInteger(id) && id > 0) return String(id);
-  throw inputError("id must be a positive integer");
-}
-
-function inputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
-function providerResponseError(message: string): ProviderRequestError {
-  return new ProviderRequestError(502, `Post Bridge returned invalid upload data: ${message}`);
+  throw providerInputError("id must be a positive integer");
 }

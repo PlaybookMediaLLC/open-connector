@@ -5,12 +5,13 @@ import type { OAuthProviderContext } from "../provider-runtime.ts";
 import { randomUUID } from "node:crypto";
 import { requiredRawString, requiredString } from "../../core/cast.ts";
 import { readBoundedResponseBytes } from "../../core/request.ts";
+import { defineGoogleProviderExecutors, googleBearerProxyAuth, googleServiceAccountValidator } from "../google-auth.ts";
 import { googleJsonRequest, googleRequest } from "../google-runtime.ts";
 import {
-  defineOAuthProviderExecutors,
   defineProviderProxy,
   providerProxyEndpointPrefixes,
   ProviderRequestError,
+  providerResponseError,
 } from "../provider-runtime.ts";
 import {
   createComment,
@@ -56,6 +57,7 @@ import {
   resolveRequiredString,
   resolveSupportsAllDrives,
 } from "./runtime-shared.ts";
+import { googledriveOAuthScopes } from "./scopes.ts";
 
 const service = "googledrive";
 
@@ -75,6 +77,17 @@ const driveFileFields = [
   "shared",
   "starred",
   "trashed",
+  // Whether THIS caller may manage the file's sharing, computed per-user by
+  // Drive itself. A consumer that mirrors a file's access list needs to know
+  // this before it tries: `permissions.list` answers 403 wherever the caller
+  // holds no sharing right, and without the projection the only way to find
+  // out is to make the call on every file and read the failures.
+  //
+  // Projected narrowly rather than as the whole `capabilities` object, which
+  // carries ~35 booleans this provider has no use for. Drive returns exactly
+  // the requested members, so the shape is `{ canShare }`.
+  "ownedByMe",
+  "capabilities(canShare)",
 ].join(",");
 const driveFields = [
   "id",
@@ -228,20 +241,22 @@ const googledriveActionHandlers: ProviderActionHandlers<"googledrive", ActionHan
   },
 };
 
-export const executors: ProviderExecutors = defineOAuthProviderExecutors(service, googledriveActionHandlers);
+export const executors: ProviderExecutors = defineGoogleProviderExecutors(service, googledriveActionHandlers, {
+  scopes: googledriveOAuthScopes,
+});
 
 export const credentialValidators: CredentialValidators = {
   async oauth2(input, { fetcher, signal }) {
     const profile = await googleJsonRequest<{
-      emailAddress?: string;
       user?: { emailAddress?: string; displayName?: string };
     }>(`${driveApiBaseUrl}/about`, {
       accessToken: input.accessToken,
       fetcher,
       signal,
-      query: { fields: "user,emailAddress" },
+      // About has no top-level `emailAddress`, and Drive rejects the whole selection when any listed field is unknown.
+      query: { fields: "user" },
     });
-    const emailAddress = profile.user?.emailAddress ?? profile.emailAddress;
+    const emailAddress = profile.user?.emailAddress;
     const displayName = profile.user?.displayName ?? emailAddress;
     return {
       profile: {
@@ -253,6 +268,7 @@ export const credentialValidators: CredentialValidators = {
       },
     };
   },
+  customCredential: googleServiceAccountValidator(service, googledriveOAuthScopes),
 };
 
 async function createDrive(input: Record<string, unknown>, accessToken: string, fetcher: typeof fetch) {
@@ -511,12 +527,12 @@ async function downloadFile(input: Record<string, unknown>, context: ActionConte
     includeSharedDrives,
     context.signal,
   );
-  const fileId = requiredString(metadata.id, "Google Drive file metadata id", providerMetadataError);
-  const name = requiredRawString(metadata.name, "Google Drive file metadata name", providerMetadataError);
+  const fileId = requiredString(metadata.id, "Google Drive file metadata id", providerResponseError);
+  const name = requiredRawString(metadata.name, "Google Drive file metadata name", providerResponseError);
   if (name.length === 0) {
-    throw providerMetadataError("Google Drive file metadata name must not be empty");
+    throw providerResponseError("Google Drive file metadata name must not be empty");
   }
-  const mimeType = requiredString(metadata.mimeType, "Google Drive file metadata MIME type", providerMetadataError);
+  const mimeType = requiredString(metadata.mimeType, "Google Drive file metadata MIME type", providerResponseError);
   if (mimeType.toLowerCase().startsWith("application/vnd.google-apps.")) {
     throw new ProviderRequestError(
       400,
@@ -768,10 +784,6 @@ async function fetchDriveFile(
   });
 }
 
-function providerMetadataError(message: string): ProviderRequestError {
-  return new ProviderRequestError(502, message);
-}
-
 function extensionForExportMimeType(mimeType: string): string {
   const normalized = mimeType.split(";")[0]?.trim().toLowerCase();
   switch (normalized) {
@@ -820,6 +832,13 @@ function normalizeDriveFile(payload: Record<string, unknown>) {
     ...(typeof payload.shared === "boolean" ? { shared: payload.shared } : {}),
     ...(typeof payload.starred === "boolean" ? { starred: payload.starred } : {}),
     ...(typeof payload.trashed === "boolean" ? { trashed: payload.trashed } : {}),
+    ...(typeof payload.ownedByMe === "boolean" ? { ownedByMe: payload.ownedByMe } : {}),
+    // Present only when Drive answered it. Omitted rather than defaulted to
+    // `false`, because "Drive did not say" and "the caller may not share" lead
+    // a consumer to opposite actions, and a default would make them the same.
+    ...(typeof asOptionalObject(payload.capabilities)?.canShare === "boolean"
+      ? { capabilities: { canShare: asOptionalObject(payload.capabilities)!.canShare as boolean } }
+      : {}),
   };
 }
 
@@ -1043,6 +1062,6 @@ function normalizeApproval(payload: Record<string, unknown>) {
 export const proxy: ProviderProxyExecutor = defineProviderProxy({
   service,
   baseUrl: "https://www.googleapis.com",
-  auth: { type: "oauth_bearer" },
+  auth: googleBearerProxyAuth(googledriveOAuthScopes),
   allowedEndpoint: providerProxyEndpointPrefixes("/drive/v3", "/upload/drive/v3"),
 });

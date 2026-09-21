@@ -167,8 +167,94 @@ const pageParent = s.oneOf(
   { description: "The official Notion parent object." },
 );
 
+/**
+ * `retrieve_page_markdown`'s output, DECLARED rather than a loose object.
+ *
+ * Every other notion action forwards Notion's body verbatim under a
+ * `notionObject`, which is right for objects whose shape belongs to Notion. A
+ * rendered page is different: it is one row a consumer will map columns onto,
+ * and a declared schema is what lets a consumer's fingerprint of this action
+ * catch an upstream rename at registration instead of at scan time.
+ *
+ * **Declaring it may not silently narrow it.** This action shipped with the
+ * provider — SDK and CLI callers already read the fields Notion's own body
+ * carries. So Notion's fields keep NOTION'S names and are forwarded
+ * unchanged, and the two fields this action adds are additive. An earlier
+ * revision of this schema renamed `unknown_block_ids` to `unknownBlockIds`
+ * and dropped `object`/`id`, which would have broken every existing caller on
+ * upgrade for no gain: a consumer mapping columns can read a snake_case key
+ * as easily as a camelCase one.
+ *
+ * `additionalProperties: true`, not the `s.object` default: the executor
+ * forwards Notion's body with a spread, so keys Notion adds beside the
+ * declared ones (`request_id` today, whatever comes next) stay on the wire,
+ * and a schema that closed the object would fail validation against the very
+ * body it describes.
+ */
+const notionPageMarkdownSchema = s.object(
+  {
+    // ---- Notion's own, forwarded verbatim ------------------------------
+    // Not required: they are Notion's to send, and declaring them mandatory
+    // would turn an upstream omission into a validation failure on a render
+    // that is otherwise perfectly usable.
+    object: s.string({ description: "Notion's object tag for the rendered result." }),
+    id: s.string({ description: "The id Notion echoes for the rendered page, in Notion's own spelling." }),
+    markdown: s.string({
+      description: "The page rendered as enhanced Markdown. An empty string for a page with no content.",
+    }),
+    truncated: s.boolean({
+      description:
+        "Whether the render stopped short of the whole page (Notion renders roughly 20,000 blocks at most). Resubmit the ids in unknown_block_ids to fetch what was left out.",
+    }),
+    unknown_block_ids: s.array(s.string({ description: "A block id." }), {
+      description:
+        "Blocks rendered as <unknown>: truncated subtrees, children this grant cannot read, and unsupported block types. Non-empty on many complete pages, so not on its own a sign of a partial render.",
+    }),
+
+    // ---- Constructed here, and additive --------------------------------
+    // camelCase, matching this provider's convention for fields it builds
+    // rather than forwards (see `notionCurrentUserSchema`).
+    pageId: s.string({
+      description:
+        "The page or block id the render was requested for, exactly as given in the input. Notion may spell an id dashed or undashed in its own body, so a consumer joining rows to bindings needs the spelling it asked with.",
+    }),
+    lastEditedTime: s.dateTime(
+      "When the page or block was last edited, read from its own object — the markdown response carries no revision.",
+    ),
+  },
+  {
+    required: ["markdown", "truncated", "unknown_block_ids", "pageId", "lastEditedTime"],
+    additionalProperties: true,
+    description: "A Notion page rendered as Markdown, with its revision and how complete the render was.",
+  },
+);
+
+/**
+ * `get_current_user`'s output. Read off what is stored with the credential,
+ * never by calling `GET /users/me` at action time: that endpoint describes
+ * the BOT, and the workspace id and owning user it does carry (under `bot`)
+ * were already recorded by the validator, next to the OAuth grant's own
+ * `workspace_id` and `owner`.
+ */
+const notionCurrentUserSchema = s.object(
+  {
+    workspaceId: s.string({ description: "The Notion workspace the grant was issued in." }),
+    workspaceName: s.nullable(s.string({ description: "The workspace's display name, when the grant carried one." })),
+    userId: s.nullable(
+      s.string({ description: "The person who authorized the grant. Null when the grant names no user." }),
+    ),
+    userName: s.nullable(s.string({ description: "That person's display name, when the grant carried one." })),
+    isBot: s.boolean({ description: "Whether the credential resolves to a bot rather than a person." }),
+  },
+  {
+    required: ["workspaceId", "workspaceName", "userId", "userName", "isBot"],
+    description: "The workspace and owning user of the connected Notion credential.",
+  },
+);
+
 const action = (input: {
   name: string;
+  operationType: ActionDefinition["operationType"];
   description: string;
   requiredScopes: string[];
   inputSchema: JsonSchema;
@@ -176,6 +262,7 @@ const action = (input: {
 }): ActionDefinition =>
   defineProviderAction(service, {
     name: input.name,
+    operationType: input.operationType,
     description: input.description,
     requiredScopes: input.requiredScopes,
     inputSchema: input.inputSchema,
@@ -184,7 +271,17 @@ const action = (input: {
 
 export const notionActions: ActionDefinition[] = [
   action({
+    name: "get_current_user",
+    operationType: "read",
+    description:
+      "The workspace and owning user of the connected Notion credential, read from what was stored with it: the OAuth grant, or the bot object recorded when the credential was validated. Makes no API call. An internal integration answers with its workspace and no user.",
+    requiredScopes: [],
+    inputSchema: s.object({}),
+    outputSchema: notionCurrentUserSchema,
+  }),
+  action({
     name: "search",
+    operationType: "read",
     description: "Search Notion pages and data sources with optional filter, sort, and pagination controls.",
     requiredScopes: notionReadScopes,
     inputSchema: s.object(
@@ -208,6 +305,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "get_page",
+    operationType: "read",
     description:
       "Get a Notion page together with its first-level child blocks. This is an aggregate helper over page retrieval plus block-children listing.",
     requiredScopes: notionReadScopes,
@@ -222,6 +320,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "create_page",
+    operationType: "write",
     description: "Create a Notion page under a parent page, data source, or workspace-level private area.",
     requiredScopes: notionWriteScopes,
     inputSchema: s.object(
@@ -242,6 +341,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "update_page",
+    operationType: "destructive",
     description: "Update a Notion page's properties, title, icon, cover, trash status, or locked state.",
     requiredScopes: notionWriteScopes,
     inputSchema: s.object(
@@ -262,6 +362,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "move_page",
+    operationType: "write",
     description: "Move a Notion page under another page or data source.",
     requiredScopes: notionWriteScopes,
     inputSchema: s.object(
@@ -275,6 +376,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "append_block",
+    operationType: "write",
     description: "Append a single paragraph block to a Notion page.",
     requiredScopes: notionWriteScopes,
     inputSchema: s.object(
@@ -288,6 +390,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "retrieve_page",
+    operationType: "read",
     description: "Retrieve a Notion page's properties and metadata by page ID.",
     requiredScopes: notionReadScopes,
     inputSchema: idInput("pageId", "The page ID to retrieve."),
@@ -295,6 +398,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "retrieve_page_markdown",
+    operationType: "read",
     description: "Retrieve a Notion page or block subtree rendered as enhanced Markdown.",
     requiredScopes: notionReadScopes,
     inputSchema: s.object(
@@ -306,10 +410,11 @@ export const notionActions: ActionDefinition[] = [
       },
       { required: ["pageId"], description: "The input payload for this action." },
     ),
-    outputSchema: notionObject,
+    outputSchema: notionPageMarkdownSchema,
   }),
   action({
     name: "update_page_markdown",
+    operationType: "write",
     description: "Update a Notion page's content as enhanced Markdown.",
     requiredScopes: notionWriteScopes,
     inputSchema: s.object(
@@ -327,6 +432,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "retrieve_page_property",
+    operationType: "read",
     description: "Retrieve a specific property item from a Notion page.",
     requiredScopes: notionReadScopes,
     inputSchema: s.object(
@@ -346,6 +452,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "list_users",
+    operationType: "read",
     description: "List users in the Notion workspace with pagination.",
     requiredScopes: notionReadScopes,
     inputSchema: paginationInput(),
@@ -353,6 +460,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "retrieve_user",
+    operationType: "read",
     description: "Retrieve a Notion user by user ID.",
     requiredScopes: notionReadScopes,
     inputSchema: idInput("userId", "The user ID to retrieve."),
@@ -360,6 +468,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "retrieve_block",
+    operationType: "read",
     description: "Retrieve a Notion block by block ID.",
     requiredScopes: notionReadScopes,
     inputSchema: idInput("blockId", "The block ID to retrieve."),
@@ -367,6 +476,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "list_block_children",
+    operationType: "read",
     description: "List the direct child blocks under a Notion block with pagination.",
     requiredScopes: notionReadScopes,
     inputSchema: paginationInput("blockId", "The parent block ID."),
@@ -374,6 +484,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "append_block_children",
+    operationType: "write",
     description: "Append raw Notion child blocks to an existing parent block.",
     requiredScopes: notionWriteScopes,
     inputSchema: s.object(
@@ -388,6 +499,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "update_block",
+    operationType: "destructive",
     description: "Update a Notion block using raw block fields.",
     requiredScopes: notionWriteScopes,
     inputSchema: s.object(
@@ -402,6 +514,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "delete_block",
+    operationType: "destructive",
     description: "Archive a Notion block through the official delete endpoint.",
     requiredScopes: notionWriteScopes,
     inputSchema: idInput("blockId", "The block ID to delete."),
@@ -409,6 +522,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "create_database",
+    operationType: "write",
     description: "Create a Notion database container under a parent page or workspace.",
     requiredScopes: notionWriteScopes,
     inputSchema: s.object(
@@ -427,6 +541,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "retrieve_database",
+    operationType: "read",
     description: "Retrieve a Notion database's metadata and schema by database ID.",
     requiredScopes: notionReadScopes,
     inputSchema: idInput("databaseId", "The database ID to retrieve."),
@@ -434,6 +549,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "update_database",
+    operationType: "destructive",
     description: "Update a Notion database container.",
     requiredScopes: notionWriteScopes,
     inputSchema: s.object(
@@ -454,6 +570,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "create_data_source",
+    operationType: "write",
     description: "Create a Notion data source under a parent database.",
     requiredScopes: notionWriteScopes,
     inputSchema: s.object(
@@ -469,6 +586,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "retrieve_data_source",
+    operationType: "read",
     description: "Retrieve a Notion data source by data source ID.",
     requiredScopes: notionReadScopes,
     inputSchema: idInput("dataSourceId", "The data source ID to retrieve."),
@@ -476,6 +594,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "update_data_source",
+    operationType: "destructive",
     description: "Update a Notion data source's title, icon, properties schema, parent, or trash status.",
     requiredScopes: notionWriteScopes,
     inputSchema: s.object(
@@ -494,6 +613,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "query_data_source",
+    operationType: "read",
     description: "Query a Notion data source with filters, sorts, pagination, and optional property filtering.",
     requiredScopes: notionReadScopes,
     inputSchema: s.object(
@@ -519,6 +639,7 @@ export const notionActions: ActionDefinition[] = [
   }),
   action({
     name: "list_data_source_templates",
+    operationType: "read",
     description: "List templates available on a Notion data source.",
     requiredScopes: notionReadScopes,
     inputSchema: paginationInput("dataSourceId", "The data source ID whose templates should be listed."),
