@@ -395,6 +395,8 @@ export interface ProviderProxyDefinition {
   auth: ProviderProxyAuth;
   allowedEndpoint?: (endpoint: string) => boolean;
   customizeRequest?: (input: ProviderProxyRequestCustomizationInput) => Promise<void> | void;
+  /** Parse a failed HTTP response using the same provider error rules as actions. */
+  readError?: (response: Response) => Promise<ProviderRequestError>;
   /** Provider-specific credential/signature headers that redirects must not forward cross-origin. */
   sensitiveHeaders?: readonly string[];
   /** Exact code-controlled origins that `customizeRequest` may select in addition to the resolved base origin. */
@@ -419,7 +421,7 @@ const blockedProxyRequestHeaders = new Set([
   "transfer-encoding",
 ]);
 const defaultProviderProxyMaxResponseBytes = 20 * 1024 * 1024;
-const defaultProviderJsonMaxResponseBytes = 20 * 1024 * 1024;
+export const defaultProviderJsonMaxResponseBytes: number = 20 * 1024 * 1024;
 const defaultProviderErrorMaxResponseBytes = 64 * 1024;
 const defaultProviderRequestTimeoutMs = 30_000;
 
@@ -686,6 +688,9 @@ export function defineProviderProxy(input: ProviderProxyDefinition): ProviderPro
 
         const response = await egressFetch(url, init);
         if (!response.ok) {
+          if (input.readError) {
+            throw await input.readError(response);
+          }
           throw new ProviderRequestError(
             response.status,
             await readProviderProxyErrorMessage(response, `provider request failed with HTTP ${response.status}`),
