@@ -20,7 +20,13 @@ import { compress } from "hono/compress";
 import { ConnectionError, defaultConnectionName } from "../connection-service.ts";
 import { ActionPolicyService, emptyPolicyRules } from "../core/action-policy.ts";
 import { DEFAULT_ACTION_SEARCH_LIMIT, createActionSearchIndexProvider, searchActions } from "../core/action-search.ts";
-import { optionalRecord, optionalString, requiredString, requiredStringArray } from "../core/cast.ts";
+import {
+  optionalRecord,
+  optionalString,
+  requiredRawString,
+  requiredString,
+  requiredStringArray,
+} from "../core/cast.ts";
 import { PromiseCache } from "../core/promise-cache.ts";
 import { MarketplaceError } from "../marketplace/marketplace-service.ts";
 import { OAuthClientConfigError, OAuthClientConfigService } from "../oauth/oauth-client-config-service.ts";
@@ -325,7 +331,13 @@ export class ConnectServer {
       return context.json(await this.options.marketplace!.configure(input));
     } catch (error) {
       if (error instanceof MarketplaceError) {
-        return jsonError(context, error.status === 404 ? 404 : 400, error.code, error.message);
+        const status = error.status;
+        return jsonError(
+          context,
+          status === 401 || status === 403 || status === 404 || status === 502 || status === 504 ? status : 400,
+          error.code,
+          error.message,
+        );
       }
       throw error;
     }
@@ -1083,6 +1095,7 @@ export class ConnectServer {
         clientId: optionalString(body.clientId) ?? "",
         clientSecret: optionalString(body.clientSecret) ?? "",
         requestedScopes: readOptionalStringArray(body, "requestedScopes"),
+        redirectUri: readOptionalRawString(body, "redirectUri"),
         extra: optionalRecord(body.extra),
         secretExtra: optionalRecord(body.secretExtra),
       }),
@@ -1257,7 +1270,7 @@ export class ConnectServer {
 }
 
 function readOAuthClientConfigInput(body: Record<string, unknown>): OAuthClientConfigInput | undefined {
-  const keys = ["clientId", "clientSecret", "requestedScopes", "extra", "secretExtra"];
+  const keys = ["clientId", "clientSecret", "requestedScopes", "redirectUri", "extra", "secretExtra"];
   if (!keys.some((key) => key in body)) {
     return undefined;
   }
@@ -1266,9 +1279,20 @@ function readOAuthClientConfigInput(body: Record<string, unknown>): OAuthClientC
     clientId: optionalString(body.clientId) ?? "",
     clientSecret: optionalString(body.clientSecret) ?? "",
     requestedScopes: readOptionalStringArray(body, "requestedScopes"),
+    redirectUri: readOptionalRawString(body, "redirectUri"),
     extra: optionalRecord(body.extra),
     secretExtra: optionalRecord(body.secretExtra),
   };
+}
+
+/** An absent field is undefined; a present one, null included, must be a string (blank is kept for the caller to read as unset). */
+function readOptionalRawString(body: Record<string, unknown>, fieldName: string): string | undefined {
+  if (!(fieldName in body)) return undefined;
+  return requiredRawString(
+    body[fieldName],
+    fieldName,
+    (message) => new HttpRequestError("invalid_input", `${message}.`),
+  );
 }
 
 function readOptionalStringArray(body: Record<string, unknown>, fieldName: string): string[] | undefined {

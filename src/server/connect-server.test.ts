@@ -36,6 +36,7 @@ import { createCatalogStore } from "../catalog-store.ts";
 import { ConnectionService } from "../connection-service.ts";
 import { ActionPolicyService as LocalActionPolicyService } from "../core/action-policy.ts";
 import { buildActionSearchIndex } from "../core/action-search.ts";
+import { MarketplaceError, MarketplaceService } from "../marketplace/marketplace-service.ts";
 import { OAuthClientConfigService } from "../oauth/oauth-client-config-service.ts";
 import { OAuthFlowService } from "../oauth/oauth-flow-service.ts";
 import { actionInputMaxDepth, hashActionRequest, hashIdempotencyKey } from "./actions/action-idempotency.ts";
@@ -43,7 +44,7 @@ import { ActionRunner } from "./actions/action-runner.ts";
 import { registerStaticRoutes } from "./api/static-routes.ts";
 import { ConnectServer } from "./connect-server.ts";
 import { TransitFileService } from "./files/transit-files.ts";
-import { AesGcmSecretCodec } from "./secrets/secret-codec.ts";
+import { AesGcmSecretCodec, PlainTextSecretCodec } from "./secrets/secret-codec.ts";
 import { decodeRunLogCursor, encodeRunLogCursor } from "./storage/runtime-store.ts";
 import { RuntimeTokenService } from "./storage/runtime-token-service.ts";
 import { SqliteRuntimeDatabase } from "./storage/sqlite-runtime-store.ts";
@@ -141,6 +142,29 @@ afterEach(() => {
 });
 
 describe("ConnectServer", () => {
+  it.each([401, 403, 502, 504])("preserves Marketplace error status %s", async (status) => {
+    const database = new SqliteRuntimeDatabase(":memory:");
+    requestDatabases.push(database);
+    const marketplace = new MarketplaceService({
+      catalog: createCatalogStore([apiKeyProvider]),
+      store: database.marketplaceStore,
+      secretCodec: new PlainTextSecretCodec(),
+    });
+    vi.spyOn(marketplace, "configure").mockRejectedValue(
+      new MarketplaceError("marketplace_unavailable", "Marketplace request failed.", status),
+    );
+    const app = createTestServer([apiKeyProvider], { marketplace }).createApp();
+    const response = await app.request("/api/marketplace", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ apiKey: "secret" }),
+    });
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual({
+      error: { code: "marketplace_unavailable", message: "Marketplace request failed." },
+    });
+  });
+
   it("rejects connections for providers unavailable in the current runtime", async () => {
     const app = createTestServer([catalogOnlyProvider]).createApp();
 
@@ -354,6 +378,109 @@ describe("ConnectServer", () => {
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({ error: { code: "invalid_input" } });
+  });
+
+  it("stores a per-provider redirect URI override through the public API and reports it", async () => {
+    const app = createTestServer([oauthProvider]).createApp();
+    const config = await app.request("/api/oauth/configs/oauth_example", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        clientId: "client-id",
+        clientSecret: "client-secret",
+        redirectUri: "app://oauth/callback",
+      }),
+    });
+
+    expect(config.status).toBe(200);
+    await expect(config.json()).resolves.toMatchObject({
+      redirectUri: "app://oauth/callback",
+      expectedRedirectUri: "app://oauth/callback",
+    });
+    await expect((await app.request("/api/oauth/configs")).json()).resolves.toMatchObject([
+      { service: "oauth_example", redirectUri: "app://oauth/callback" },
+    ]);
+
+    const authorization = await app.request("/api/oauth/authorizations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ service: "oauth_example" }),
+    });
+    const body = (await authorization.json()) as { authorizationUrl: string };
+
+    expect(authorization.status).toBe(200);
+    expect(new URL(body.authorizationUrl).searchParams.get("redirect_uri")).toBe("app://oauth/callback");
+  });
+
+  it.each([
+    ["not an absolute URL", "oauth/callback", "redirectUri must be an absolute URL."],
+    ["a javascript URL", "javascript:alert(1)", "redirectUri scheme is not allowed."],
+    ["not a string", 42, "redirectUri must be a string."],
+    ["null", null, "redirectUri must be a string."],
+  ])("rejects a redirect URI override that is %s through the public API", async (_case, redirectUri, message) => {
+    const app = createTestServer([oauthProvider]).createApp();
+    const response = await app.request("/api/oauth/configs/oauth_example", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ clientId: "client-id", clientSecret: "client-secret", redirectUri }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: { code: "invalid_input", message } });
+    await expect((await app.request("/api/oauth/configs")).json()).resolves.toMatchObject([
+      { service: "oauth_example", configured: false, redirectUri: null },
+    ]);
+  });
+
+  // A redirect URI on the authorization request belongs to a connection-scoped
+  // client; it must never redirect the stored client's authorization code.
+  it.each([
+    ["custom OAuth apps are disabled", {}, "oauth_custom_app_not_allowed"],
+    [
+      "custom OAuth apps are enabled",
+      { allowedCustomOAuth: ["oauth_example"], secretCodec: new AesGcmSecretCodec("test-encryption-key") },
+      "invalid_input",
+    ],
+  ])("does not pair an authorization redirect URI with the stored client when %s", async (_case, options, code) => {
+    const app = createTestServer([oauthProvider], options).createApp();
+    await app.request("/api/oauth/configs/oauth_example", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ clientId: "global-client-id", clientSecret: "global-client-secret" }),
+    });
+
+    const response = await app.request("/api/oauth/authorizations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ service: "oauth_example", redirectUri: "https://elsewhere.example/callback" }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { code } });
+  });
+
+  it("carries a connection-scoped OAuth client's own redirect URI on its authorize URL", async () => {
+    const app = createTestServer([oauthProvider], {
+      allowedCustomOAuth: ["oauth_example"],
+      secretCodec: new AesGcmSecretCodec("test-encryption-key"),
+    }).createApp();
+
+    const response = await app.request("/api/oauth/authorizations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        service: "oauth_example",
+        clientId: "connection-client-id",
+        clientSecret: "connection-client-secret",
+        redirectUri: "app://oauth/callback",
+      }),
+    });
+    const body = (await response.json()) as { authorizationUrl: string };
+
+    expect(response.status).toBe(200);
+    const authorizationUrl = new URL(body.authorizationUrl);
+    expect(authorizationUrl.searchParams.get("client_id")).toBe("connection-client-id");
+    expect(authorizationUrl.searchParams.get("redirect_uri")).toBe("app://oauth/callback");
   });
 
   it("lists providers without action schemas and serves full schemas per action", async () => {
@@ -3680,6 +3807,7 @@ interface TestAuthOptions {
 }
 
 interface CreateTestServerOptions {
+  marketplace?: MarketplaceService;
   auth?: TestAuthOptions;
   publicOrigin?: string;
   actionPolicy?: ActionPolicyService;
@@ -3742,6 +3870,7 @@ function createTestServer(providers: ProviderDefinition[], options: CreateTestSe
   const staticRoot = typeof options.staticRoot === "string" ? options.staticRoot : undefined;
 
   return new ConnectServer({
+    marketplace: options.marketplace,
     catalog,
     publicOrigin: options.publicOrigin ?? "http://localhost:3000",
     providerLoader,

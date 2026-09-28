@@ -9,7 +9,11 @@ import type { GmailDraftResource, GmailMessageResource, GmailThreadResource } fr
 
 import { looseArray, optionalRecord, optionalString } from "../../core/cast.ts";
 import { encodePathSegment } from "../../core/request.ts";
-import { googleBearerProxyAuth, googleServiceAccountValidator, resolveGoogleAccessToken } from "../google-auth.ts";
+import {
+  googleBearerProxyAuth,
+  googleServiceAccountValidator,
+  resolveGoogleAccessToken,
+} from "../googledrive/runtime-auth.ts";
 import {
   defineProviderExecutors,
   defineProviderProxy,
@@ -18,6 +22,7 @@ import {
   readProviderJsonBody,
   requiredInputString,
   runProviderRequest,
+  withRetryAfterSeconds,
 } from "../provider-runtime.ts";
 import { decodeGmailAttachment } from "./attachment-stream.ts";
 import {
@@ -1185,7 +1190,7 @@ async function readGmailError(response: Response): Promise<ProviderRequestError>
   return new ProviderRequestError(
     response.status,
     optionalString(error?.message) ?? `gmail request failed with ${response.status}`,
-    undefined,
+    withRetryAfterSeconds(response),
     rateLimited ? "rate_limited" : undefined,
   );
 }

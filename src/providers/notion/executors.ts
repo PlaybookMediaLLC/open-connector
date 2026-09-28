@@ -13,12 +13,14 @@ import {
   createProviderProxyUrl,
   defineProviderExecutors,
   normalizeProviderProxyHeaders,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
   requireBearerCredential,
   toProviderProxyError,
+  withRetryAfterSeconds,
 } from "../provider-runtime.ts";
 
 const service = "notion";
@@ -130,6 +132,12 @@ export const notionActionHandlers: ProviderActionHandlers<"notion", NotionAction
   list_data_source_templates(input, context): Promise<unknown> {
     return notionListDataSourceTemplates(input, context.accessToken, context.fetcher);
   },
+  list_comments(input, context): Promise<unknown> {
+    return notionListComments(input, context.accessToken, context.fetcher);
+  },
+  create_comment(input, context): Promise<unknown> {
+    return notionCreateComment(input, context.accessToken, context.fetcher);
+  },
 };
 
 export const executors: ProviderExecutors = defineProviderExecutors<NotionActionContext>({
@@ -172,7 +180,11 @@ export const proxy: ProviderProxyExecutor = async (input, context) => {
     const response = await notionFetch(url, init);
     if (!response.ok) {
       const text = await readProviderProxyErrorMessage(response, "");
-      throw new ProviderRequestError(response.status, text || `Notion request failed with HTTP ${response.status}`);
+      throw new ProviderRequestError(
+        response.status,
+        text || `Notion request failed with HTTP ${response.status}`,
+        withRetryAfterSeconds(response),
+      );
     }
 
     return { ok: true, response: await readProviderProxyResponse(response) };
@@ -826,6 +838,49 @@ async function notionListDataSourceTemplates(
   return payload ?? {};
 }
 
+async function notionListComments(input: Record<string, unknown>, accessToken: string, fetcher: typeof fetch) {
+  const payload = await notionRequest<NotionObject>(
+    accessToken,
+    {
+      path: "/comments",
+      query: compactQuery({
+        block_id: String(input.blockId),
+        page_size: asNumber(input.pageSize),
+        start_cursor: asNonEmptyString(input.startCursor),
+      }),
+    },
+    fetcher,
+  );
+
+  return payload ?? {};
+}
+
+async function notionCreateComment(input: Record<string, unknown>, accessToken: string, fetcher: typeof fetch) {
+  const parent = asObject(input.parent);
+  const discussionId = asNonEmptyString(input.discussion_id);
+  if (!parent === !discussionId) {
+    throw providerInputError("exactly one of parent or discussion_id is required");
+  }
+
+  const payload = await notionRequest<NotionObject>(
+    accessToken,
+    {
+      method: "POST",
+      path: "/comments",
+      body: compactObject({
+        parent,
+        discussion_id: discussionId,
+        rich_text: Array.isArray(input.rich_text) ? input.rich_text : [],
+        attachments: Array.isArray(input.attachments) ? input.attachments : undefined,
+        display_name: asObject(input.display_name),
+      }),
+    },
+    fetcher,
+  );
+
+  return payload ?? {};
+}
+
 async function notionRequest<T>(accessToken: string, input: NotionRequestInput, fetcher: typeof fetch) {
   const url = new URL(`https://api.notion.com/v1${input.path}`);
   for (const [key, value] of Object.entries(input.query ?? {})) {
@@ -895,7 +950,7 @@ async function assertNotionResponse(response: Response) {
     throw new ProviderRequestError(403, message);
   }
   if (response.status === 429) {
-    throw new ProviderRequestError(429, message);
+    throw new ProviderRequestError(429, message, withRetryAfterSeconds(response));
   }
 
   throw new ProviderRequestError(response.status, message);

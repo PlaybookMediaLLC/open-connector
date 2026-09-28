@@ -9,6 +9,7 @@ import {
   ProviderRequestError,
   readProviderJsonBody,
   readTransitFileInput,
+  runProviderRequest,
 } from "../provider-runtime.ts";
 
 const apiBaseUrl = "https://api.postiz.com/public/v1";
@@ -113,37 +114,40 @@ async function uploadFile(input: Record<string, unknown>, context: ApiKeyProvide
 }
 
 async function postizRequest(input: PostizRequestOptions): Promise<unknown> {
-  const url = new URL(input.path, `${apiBaseUrl}/`);
-  for (const [key, value] of Object.entries(input.query ?? {})) {
-    if (value !== undefined) url.searchParams.set(key, value);
-  }
-  const isForm = input.body instanceof FormData;
-  const body = input.body instanceof FormData ? input.body : input.body ? JSON.stringify(input.body) : undefined;
-  const response = await input.context.fetcher(url, {
-    method: input.method ?? "GET",
-    headers: {
+  return runProviderRequest({ signal: input.context.signal, label: "Postiz" }, async (signal) => {
+    const url = new URL(input.path, `${apiBaseUrl}/`);
+    for (const [key, value] of Object.entries(input.query ?? {})) {
+      if (value !== undefined) url.searchParams.set(key, value);
+    }
+    const headers = new Headers({
       accept: "application/json",
       authorization: input.context.apiKey,
-      ...(input.body && !isForm ? { "content-type": "application/json" } : {}),
       "user-agent": providerUserAgent,
-    },
-    body,
-    signal: input.context.signal,
+    });
+    let body: FormData | string | undefined;
+    if (input.body instanceof FormData) {
+      body = input.body;
+    } else if (input.body) {
+      body = JSON.stringify(input.body);
+      headers.set("content-type", "application/json");
+    }
+    const response = await input.context.fetcher(url, { method: input.method ?? "GET", headers, body, signal });
+    const payload = await readProviderJsonBody(response, {
+      emptyBody: {},
+      invalidJsonMessage: "Postiz returned an invalid JSON response.",
+      invalidJsonFallback: (text) => text,
+    });
+    if (!response.ok) {
+      const record = optionalRecord(payload);
+      const message =
+        optionalString(record?.message) ??
+        optionalString(record?.error) ??
+        optionalString(payload) ??
+        `Postiz request failed with status ${response.status}`;
+      throw new ProviderRequestError(response.status, message, payload);
+    }
+    return payload;
   });
-  const payload = await readProviderJsonBody(response, {
-    emptyBody: {},
-    invalidJsonMessage: "Postiz returned an invalid JSON response.",
-    invalidJsonFallback: (text) => text,
-  });
-  if (!response.ok) {
-    const record = optionalRecord(payload);
-    const message =
-      optionalString(record?.message) ??
-      optionalString(record?.error) ??
-      `Postiz request failed with status ${response.status}`;
-    throw new ProviderRequestError(response.status, message, payload);
-  }
-  return payload;
 }
 
 function validatePostMediaUrls(input: Record<string, unknown>): void {

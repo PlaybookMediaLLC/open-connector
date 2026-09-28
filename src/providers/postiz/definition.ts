@@ -13,8 +13,7 @@ export const provider: ProviderDefinition = {
       type: "api_key",
       label: "API Key",
       placeholder: "POSTIZ_API_KEY",
-      description:
-        "Postiz API key sent in the Authorization header. Create it in Postiz Settings: https://docs.postiz.com/public-api/introduction",
+      description: "Copy the API key from Settings > Developers > Public API at https://platform.postiz.com/.",
     },
   ],
   homepageUrl: "https://postiz.com",
