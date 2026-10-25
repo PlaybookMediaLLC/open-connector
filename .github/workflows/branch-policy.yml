@@ -2,6 +2,7 @@ name: Branch policy
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
     branches: [develop, main]
 
 permissions:
