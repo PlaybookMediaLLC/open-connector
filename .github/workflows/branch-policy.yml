@@ -22,8 +22,8 @@ jobs:
           if [[ "$BASE_REF" == "develop" ]]; then
             exit 0
           fi
-          if [[ "$BASE_REF" == "main" && "$HEAD_REF" == "develop" && "$HEAD_REPOSITORY" == "$BASE_REPOSITORY" ]]; then
+          if [[ "$BASE_REF" == "main" && ( "$HEAD_REF" == "develop" || "$HEAD_REF" == "upstream" ) && "$HEAD_REPOSITORY" == "$BASE_REPOSITORY" ]]; then
             exit 0
           fi
-          echo "Work pull requests must target develop. Only this repository's develop branch may target main."
+          echo "Work pull requests must target develop. Only this repository's develop or upstream branch may target main."
           exit 1
