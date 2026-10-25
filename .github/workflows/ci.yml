@@ -24,7 +24,7 @@ env:
   # forbids `tsx` / `--experimental-strip-types` (see AGENTS.md). Type stripping is
   # on by default only on Node >= 22.18 / >= 23.6, so pin an LTS that supports it.
   # Do NOT downgrade below 22.18 — `npm ci` (postinstall codegen) and typecheck fail.
-  NODE_VERSION: "24"
+  NODE_VERSION: "24.22.1"
 
 jobs:
   ci:
@@ -78,3 +78,18 @@ jobs:
       # 3) Unit tests (vitest): covers src and the web workspace.
       - name: Run tests (vitest)
         run: npm test
+
+  ci-validation:
+    name: CI validation
+    if: always()
+    needs: [ci]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every validation job to pass
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          test -n "$RESULTS"
+          for result in $RESULTS; do
+            test "$result" = success || exit 1
+          done
